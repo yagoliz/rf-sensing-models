@@ -9,6 +9,7 @@ SHAPES = [(1, 250, 90), (3, 114, 500), (22, 20, 20)]
 # (registered name, extra kwargs) — extended as models are added.
 CASES = [
     ("mlp", {}),
+    ("lenet", {}),
 ]
 
 
