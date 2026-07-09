@@ -69,3 +69,21 @@ def test_ntu_fi_real_data(name, n_classes):
     assert x.shape == (2, 3, 114, 500)
     assert x.dtype == torch.float32
     assert y.dtype == torch.int64
+
+
+def test_widar_missing_root_raises(tmp_path):
+    with pytest.raises(FileNotFoundError, match="Expected layout"):
+        data.build("widar", root=tmp_path)
+
+
+@pytest.mark.data
+@requires_data
+def test_widar_real_data():
+    dm = data.build("widar", root=DATA_ROOT, batch_size=2)
+    assert dm.num_classes == 22
+    assert dm.class_names[0] == "Push&Pull"
+    dm.setup("fit")
+    x, y = next(iter(dm.train_dataloader()))
+    assert x.shape == (2, 22, 20, 20)
+    assert x.dtype == torch.float32
+    assert y.dtype == torch.int64
