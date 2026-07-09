@@ -13,6 +13,7 @@ CASES = [
     ("lstm", {}),
     ("lstm", {"bidirectional": True}),
     ("resnet18", {}),
+    ("vit", {}),
 ]
 
 
@@ -32,6 +33,11 @@ def test_unknown_model_lists_available():
 
 def test_list_available_contains_mlp():
     assert "mlp" in models.list_available()
+
+
+def test_vit_rejects_oversized_patch():
+    with pytest.raises(ValueError, match="patch_size"):
+        models.build("vit", in_shape=(1, 8, 8), num_classes=4, patch_size=10)
 
 
 def test_lstm_seq_axis():
