@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from rfsensing import data
-from conftest import DATA_ROOT, requires_data
+from tests.conftest import DATA_ROOT, requires_data
 
 
 def test_unknown_dataset_lists_available():
