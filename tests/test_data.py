@@ -48,3 +48,24 @@ def test_ut_har_real_data():
     assert y.dtype == torch.int64
     assert dm.num_classes == 7
     assert 0 <= int(y.min()) and int(y.max()) < 7
+
+
+def test_ntu_fi_missing_root_raises(tmp_path):
+    with pytest.raises(FileNotFoundError, match="Expected layout"):
+        data.build("ntu_fi_har", root=tmp_path)
+
+
+@pytest.mark.data
+@requires_data
+@pytest.mark.parametrize(
+    "name,n_classes",
+    [("ntu_fi_har", 6), ("ntu_fi_humanid", 14)],
+)
+def test_ntu_fi_real_data(name, n_classes):
+    dm = data.build(name, root=DATA_ROOT, batch_size=2)
+    assert dm.num_classes == n_classes
+    dm.setup("fit")
+    x, y = next(iter(dm.train_dataloader()))
+    assert x.shape == (2, 3, 114, 500)
+    assert x.dtype == torch.float32
+    assert y.dtype == torch.int64
