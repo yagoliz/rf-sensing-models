@@ -12,6 +12,7 @@ CASES = [
     ("lenet", {}),
     ("lstm", {}),
     ("lstm", {"bidirectional": True}),
+    ("resnet18", {}),
 ]
 
 

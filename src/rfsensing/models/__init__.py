@@ -8,4 +8,4 @@ build = _registry.build
 list_available = _registry.available
 
 # Import submodules so their @register decorators run.
-from rfsensing.models import lenet, mlp, rnn  # noqa: E402, F401
+from rfsensing.models import lenet, mlp, resnet, rnn  # noqa: E402, F401
