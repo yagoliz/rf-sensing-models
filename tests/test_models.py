@@ -10,6 +10,8 @@ SHAPES = [(1, 250, 90), (3, 114, 500), (22, 20, 20)]
 CASES = [
     ("mlp", {}),
     ("lenet", {}),
+    ("lstm", {}),
+    ("lstm", {"bidirectional": True}),
 ]
 
 
@@ -29,3 +31,9 @@ def test_unknown_model_lists_available():
 
 def test_list_available_contains_mlp():
     assert "mlp" in models.list_available()
+
+
+def test_lstm_seq_axis():
+    net = models.build("lstm", in_shape=(22, 20, 20), num_classes=6, seq_axis=0)
+    out = net(torch.randn(2, 22, 20, 20))
+    assert out.shape == (2, 6)
