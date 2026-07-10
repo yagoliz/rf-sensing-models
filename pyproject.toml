@@ -22,6 +22,7 @@ dev = [
     "nbclient>=0.9",
     "matplotlib>=3.8",
     "pandas>=2",
+    "jupyter>=1.1.1",
 ]
 
 [build-system]
