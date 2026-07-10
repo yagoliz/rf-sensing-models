@@ -1,6 +1,8 @@
 """UT-HAR: 7-activity HAR dataset (Yousefi et al.), SenseFi packaging.
 
-The ``.csv`` files ship numpy binary content, hence ``np.load``.
+The ``.csv`` files ship numpy binary content, hence ``np.load``. Amplitudes
+are standardized with fixed train-split statistics (SenseFi feeds them raw,
+which leaves the MLP baseline at chance accuracy).
 """
 
 from pathlib import Path
@@ -16,6 +18,10 @@ _LAYOUT = """\
 UT_HAR/
 ├── data/   X_train.csv X_val.csv X_test.csv   (numpy .npy binary content)
 └── label/  y_train.csv y_val.csv y_test.csv"""
+
+# Amplitude statistics of the SenseFi train split; applied to all splits
+# (same convention as the NTU-Fi and Widar loaders).
+_MEAN, _STD = 17.653, 5.903
 
 
 @register("ut_har")
@@ -38,6 +44,7 @@ class UTHARDataModule(CSIDataModule):
         with open(self.root / "label" / f"y_{split}.csv", "rb") as f:
             y = np.load(f)
         x = x.reshape(len(x), 1, 250, 90).astype(np.float32)
+        x = (x - _MEAN) / _STD
         return TensorDataset(
             torch.from_numpy(x), torch.from_numpy(y.astype(np.int64))
         )

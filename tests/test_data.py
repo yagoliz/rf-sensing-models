@@ -48,6 +48,9 @@ def test_ut_har_real_data():
     assert y.dtype == torch.int64
     assert dm.num_classes == 7
     assert 0 <= int(y.min()) and int(y.max()) < 7
+    xs = dm.train_set.tensors[0]
+    assert abs(float(xs.mean())) < 0.05
+    assert 0.9 < float(xs.std()) < 1.1
 
 
 def test_ntu_fi_missing_root_raises(tmp_path):
