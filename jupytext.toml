@@ -1,0 +1,3 @@
+# Pair notebooks with percent-format .py files (the committed source of
+# truth; *.ipynb is gitignored). Sync with: uv run jupytext --sync notebooks/*.py
+formats = "ipynb,py:percent"

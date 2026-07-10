@@ -6,6 +6,7 @@ __pycache__/
 runs/
 lightning_logs/
 .ipynb_checkpoints/
+notebooks/*.ipynb
 .DS_Store
 
 .claude/
