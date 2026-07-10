@@ -40,6 +40,16 @@ def test_vit_rejects_oversized_patch():
         models.build("vit", in_shape=(1, 8, 8), num_classes=4, patch_size=10)
 
 
+@pytest.mark.parametrize("name,kwargs", CASES, ids=lambda c: str(c))
+def test_embed_head_contract(name, kwargs):
+    net = models.build(name, in_shape=(1, 250, 90), num_classes=6, **kwargs)
+    net.eval()
+    x = torch.randn(2, 1, 250, 90)
+    z = net.embed(x)
+    assert z.ndim == 2 and z.shape[0] == 2
+    assert torch.allclose(net(x), net.head(z), atol=1e-6)
+
+
 def test_lstm_seq_axis():
     net = models.build("lstm", in_shape=(22, 20, 20), num_classes=6, seq_axis=0)
     out = net(torch.randn(2, 22, 20, 20))

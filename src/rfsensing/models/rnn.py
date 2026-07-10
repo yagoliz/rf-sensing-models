@@ -38,8 +38,11 @@ class LSTM(nn.Module):
         out_dim = hidden_size * (2 if bidirectional else 1)
         self.head = nn.Linear(out_dim, num_classes)
 
-    def forward(self, x):
+    def embed(self, x):
         x = x.movedim(self.seq_axis + 1, 1)  # +1 for the batch dim -> (B, T, ...)
         x = x.flatten(start_dim=2)  # (B, T, F)
         out, _ = self.lstm(x)
-        return self.head(out[:, -1])
+        return out[:, -1]
+
+    def forward(self, x):
+        return self.head(self.embed(x))

@@ -53,6 +53,13 @@ class ResNet18(nn.Module):
         self.pool = nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Linear(8 * w, num_classes)
 
-    def forward(self, x):
+    def embed(self, x):
         x = self.layers(self.stem(x))
-        return self.fc(self.pool(x).flatten(1))
+        return self.pool(x).flatten(1)
+
+    @property
+    def head(self):
+        return self.fc
+
+    def forward(self, x):
+        return self.head(self.embed(x))

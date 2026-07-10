@@ -30,5 +30,12 @@ class LeNet(nn.Module):
             nn.Linear(128, num_classes),
         )
 
+    def embed(self, x):
+        return self.classifier[:-1](self.features(x))
+
+    @property
+    def head(self):
+        return self.classifier[-1]
+
     def forward(self, x):
-        return self.classifier(self.features(x))
+        return self.head(self.embed(x))

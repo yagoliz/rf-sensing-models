@@ -51,9 +51,11 @@ class ViT(nn.Module):
         self.norm = nn.LayerNorm(embed_dim)
         self.head = nn.Linear(embed_dim, num_classes)
 
-    def forward(self, x):
+    def embed(self, x):
         x = self.patch_embed(x).flatten(2).transpose(1, 2)  # (B, N, D)
         cls = self.cls_token.expand(x.size(0), -1, -1)
         x = torch.cat([cls, x], dim=1) + self.pos_embed
-        x = self.encoder(x)
-        return self.head(self.norm(x[:, 0]))
+        return self.norm(self.encoder(x)[:, 0])
+
+    def forward(self, x):
+        return self.head(self.embed(x))

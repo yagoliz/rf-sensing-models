@@ -18,5 +18,12 @@ class MLP(nn.Module):
         layers.append(nn.Linear(dims[-1], num_classes))
         self.net = nn.Sequential(*layers)
 
+    def embed(self, x):
+        return self.net[:-1](x)
+
+    @property
+    def head(self):
+        return self.net[-1]
+
     def forward(self, x):
-        return self.net(x)
+        return self.head(self.embed(x))
