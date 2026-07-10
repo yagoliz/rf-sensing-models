@@ -61,6 +61,24 @@ for ax, antenna in zip(axes, range(3)):
 fig.colorbar(im, ax=axes, label="normalized amplitude")
 
 # %% [markdown]
+# ## NTU-FI HumanID
+
+# %%
+x.shape
+
+# %%
+dm = modules["ntu_fi_humanid"]
+x, y = next(iter(dm.train_dataloader()))
+fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+for ax, i in zip(axes, range(3)):
+    im = ax.imshow(x[i, 0].T, aspect="auto", origin="lower", cmap="viridis")
+    ax.set_xlabel("time index")
+    ax.set_ylabel("antenna x subcarrier")
+    ax.set_title(dm.class_names[int(y[i])])
+fig.colorbar(im, ax=axes, label="amplitude")
+fig.tight_layout()
+
+# %% [markdown]
 # ## Widar: BVP time steps
 
 # %%
