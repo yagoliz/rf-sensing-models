@@ -64,9 +64,6 @@ fig.colorbar(im, ax=axes, label="normalized amplitude")
 # ## NTU-FI HumanID
 
 # %%
-x.shape
-
-# %%
 dm = modules["ntu_fi_humanid"]
 x, y = next(iter(dm.train_dataloader()))
 fig, axes = plt.subplots(1, 3, figsize=(12, 4))
