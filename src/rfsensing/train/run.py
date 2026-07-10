@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import lightning as L
+import torch
 import torch.nn as nn
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import TensorBoardLogger
@@ -53,3 +54,18 @@ def run(
         checkpoint_path=Path(checkpoint.best_model_path),
         log_dir=Path(trainer.log_dir),
     )
+
+
+def load_best_net(net: nn.Module, result: Result) -> nn.Module:
+    """Load ``result``'s best-checkpoint weights into ``net`` (in place).
+
+    The in-memory net after ``run()`` holds last-epoch weights; the best
+    (by ``val/acc``) live in the checkpoint under Lightning's ``net.`` prefix.
+    """
+    state = torch.load(
+        result.checkpoint_path, map_location="cpu", weights_only=True
+    )["state_dict"]
+    net.load_state_dict(
+        {k.removeprefix("net."): v for k, v in state.items() if k.startswith("net.")}
+    )
+    return net

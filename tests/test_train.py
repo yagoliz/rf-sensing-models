@@ -36,3 +36,20 @@ def test_run_end_to_end_synthetic(tmp_path):
     assert result.checkpoint_path.exists()
     assert result.log_dir.is_dir()
     assert str(tmp_path) in str(result.log_dir)
+
+
+def test_load_best_net_restores_checkpoint_weights(tmp_path):
+    dm = data.build("synthetic", batch_size=8)
+    net = models.build(
+        "mlp", in_shape=dm.sample_shape, num_classes=dm.num_classes, hidden_dims=(16,)
+    )
+    result = train.run(
+        net, dm, max_epochs=2, name="smoke", runs_dir=tmp_path, accelerator="cpu"
+    )
+    restored = train.load_best_net(net, result)
+    assert restored is net
+    ckpt = torch.load(
+        result.checkpoint_path, map_location="cpu", weights_only=True
+    )["state_dict"]
+    for key, value in restored.state_dict().items():
+        assert torch.equal(value, ckpt["net." + key])
