@@ -40,6 +40,9 @@ def test_run_end_to_end_synthetic(tmp_path):
     assert result.checkpoint_path.exists()
     assert result.log_dir.is_dir()
     assert str(tmp_path) in str(result.log_dir)
+    assert result.monitor == "val/acc"
+    assert result.monitor_mode == "max"
+    assert 0.0 <= result.best_score <= 1.0
 
 
 def test_load_best_net_restores_checkpoint_weights(tmp_path):
@@ -151,4 +154,23 @@ def test_run_end_to_end_regression(tmp_path):
     assert {"test/mae", "test/within_1", "test/rounded_acc"} <= result.metrics.keys()
     assert result.metrics["test/mae"] >= 0
     assert result.checkpoint_path.exists()
+    assert result.monitor == "val/mae"
+    assert result.monitor_mode == "min"
+    assert result.best_score >= 0
     assert train.load_best_net(net, result) is net
+
+
+def test_monitor_override_requires_mode(tmp_path):
+    dm = data.build("synthetic", batch_size=8)
+    net = models.build(
+        "mlp", in_shape=dm.sample_shape, num_classes=dm.output_dim, hidden_dims=(16,)
+    )
+    with pytest.raises(ValueError, match="monitor_mode"):
+        train.run(
+            net,
+            dm,
+            max_epochs=1,
+            runs_dir=tmp_path,
+            accelerator="cpu",
+            monitor="val/loss",
+        )

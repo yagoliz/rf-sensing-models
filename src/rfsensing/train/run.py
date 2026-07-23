@@ -19,6 +19,9 @@ class Result:
     metrics: dict[str, float]
     checkpoint_path: Path
     log_dir: Path
+    monitor: str = ""
+    monitor_mode: Literal["min", "max"] = "max"
+    best_score: float = float("nan")
 
 
 def _build_module(
@@ -64,12 +67,16 @@ def run(
     monitor_mode: Literal["min", "max"] | None = None,
 ) -> Result:
     """Train ``net`` on ``dm``, test with the best checkpoint, return metrics."""
+    if (monitor is None) != (monitor_mode is None):
+        raise ValueError(
+            "monitor and monitor_mode must be overridden together"
+        )
     L.seed_everything(seed, workers=True)
     module = _build_module(net, dm, lr=lr, weight_decay=weight_decay)
     experiment = name or type(net).__name__.lower()
     logger = TensorBoardLogger(str(runs_dir), name=f"{dm.name}/{experiment}")
-    monitor = monitor or dm.checkpoint_monitor
-    monitor_mode = monitor_mode or dm.checkpoint_mode
+    monitor = dm.checkpoint_monitor if monitor is None else monitor
+    monitor_mode = dm.checkpoint_mode if monitor_mode is None else monitor_mode
     checkpoint = ModelCheckpoint(
         monitor=monitor, mode=monitor_mode, save_top_k=1
     )
@@ -82,10 +89,15 @@ def run(
     )
     trainer.fit(module, datamodule=dm)
     test_metrics = trainer.test(module, datamodule=dm, ckpt_path="best")[0]
+    if checkpoint.best_model_score is None:
+        raise RuntimeError(f"checkpoint monitor {monitor!r} produced no score")
     return Result(
         metrics={k: float(v) for k, v in test_metrics.items()},
         checkpoint_path=Path(checkpoint.best_model_path),
         log_dir=Path(trainer.log_dir),
+        monitor=monitor,
+        monitor_mode=monitor_mode,
+        best_score=float(checkpoint.best_model_score),
     )
 
 

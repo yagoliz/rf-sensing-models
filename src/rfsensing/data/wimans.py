@@ -127,6 +127,10 @@ def _preprocess_amplitude(
         raise ValueError(
             f"{path} has shape {values.shape}; expected (time, 3, 3, 30)"
         )
+    if values.shape[0] <= 0:
+        raise ValueError(
+            f"{path} must have a positive time length; got {values.shape[0]}"
+        )
     if not np.isfinite(values).all():
         raise ValueError(f"{path} contains non-finite amplitude values")
     values = values.astype(np.float32, copy=False)

@@ -123,7 +123,24 @@ def run_models(dm, task_name):
         runs[model_name] = result
         nets[model_name] = net
         print(model_name, result.metrics)
-    return pd.DataFrame(results).T, runs, nets
+    table = pd.DataFrame(results).T
+    table["selection/monitor"] = pd.Series(
+        {name: result.monitor for name, result in runs.items()}
+    )
+    table["selection/value"] = pd.Series(
+        {name: result.best_score for name, result in runs.items()}
+    )
+    return table, runs, nets
+
+
+def select_best_run(runs):
+    modes = {result.monitor_mode for result in runs.values()}
+    if len(modes) != 1:
+        raise ValueError("all compared runs must use the same monitor mode")
+    scores = pd.Series(
+        {name: result.best_score for name, result in runs.items()}
+    )
+    return scores.idxmin() if modes.pop() == "min" else scores.idxmax()
 
 
 # %% [markdown]
@@ -170,6 +187,10 @@ comparison[["test/exact_acc", "test/mae", "test/within_1"]].sort_values(
 
 # %% [markdown]
 # ## Best-model diagnostics
+#
+# Model selection uses each run's validation checkpoint monitor (`val/acc` for
+# classification and `val/mae` for regression). The test split is used only
+# after selection for the plots below.
 
 # %%
 def collect_predictions(net, loader, regression=False):
@@ -185,7 +206,7 @@ def collect_predictions(net, loader, regression=False):
     return torch.cat(predictions), torch.cat(targets)
 
 
-best_class_name = classification_table["test/mae"].idxmin()
+best_class_name = select_best_run(classification_runs)
 best_class_net = train.load_best_net(
     classification_nets[best_class_name],
     classification_runs[best_class_name],
@@ -207,7 +228,7 @@ fig.colorbar(image, ax=ax)
 fig.tight_layout()
 
 # %%
-best_reg_name = regression_table["test/mae"].idxmin()
+best_reg_name = select_best_run(regression_runs)
 best_reg_net = train.load_best_net(
     regression_nets[best_reg_name],
     regression_runs[best_reg_name],

@@ -10,3 +10,5 @@ def test_wimans_counting_notebook_source_contract():
     assert 'target="regression"' in source
     assert '"split_strategy": "group"' in source
     assert "test/within_1" in source
+    assert "best_score" in source
+    assert '["test/mae"].idxmin()' not in source

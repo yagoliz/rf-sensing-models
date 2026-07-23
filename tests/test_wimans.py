@@ -142,6 +142,13 @@ def test_preprocess_rejects_bad_shape_and_nonfinite_values(tmp_path):
         _preprocess_amplitude(nonfinite, 4, 2, "left", "mean")
 
 
+def test_preprocess_rejects_empty_trace(tmp_path):
+    empty = tmp_path / "empty.npy"
+    np.save(empty, np.empty((0, 3, 3, 30), dtype=np.float32))
+    with pytest.raises(ValueError, match=r"empty\.npy.*positive time length"):
+        _preprocess_amplitude(empty, 4, 2, "left", "mean")
+
+
 @pytest.mark.parametrize(
     "target,dtype",
     [("classification", torch.int64), ("regression", torch.float32)],
