@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torch.utils.data import Dataset
+
 _DOWNLOAD_URL = "https://www.kaggle.com/datasets/shuokanghuang/wimans"
 _LABEL_PATTERN = re.compile(r"act_(\d+)_(\d+)")
 _REQUIRED_COLUMNS = {
@@ -103,3 +108,116 @@ def _load_records(
     if not records:
         raise ValueError("WiMANS filters selected no samples")
     return records
+
+
+def _preprocess_amplitude(
+    path: Path,
+    raw_time_steps: int,
+    time_steps: int | None,
+    pad_side: str,
+    pooling: str,
+) -> torch.Tensor:
+    values = np.load(path, allow_pickle=False)
+    if values.ndim != 4 or values.shape[1:] != (3, 3, 30):
+        raise ValueError(
+            f"{path} has shape {values.shape}; expected (time, 3, 3, 30)"
+        )
+    if not np.isfinite(values).all():
+        raise ValueError(f"{path} contains non-finite amplitude values")
+    values = values.astype(np.float32, copy=False)
+    if values.shape[0] > raw_time_steps:
+        values = (
+            values[-raw_time_steps:]
+            if pad_side == "left"
+            else values[:raw_time_steps]
+        )
+    padding = raw_time_steps - values.shape[0]
+    widths = (
+        ((padding, 0), (0, 0), (0, 0), (0, 0))
+        if pad_side == "left"
+        else ((0, padding), (0, 0), (0, 0), (0, 0))
+    )
+    values = np.pad(values, widths)
+    tensor = torch.from_numpy(
+        values.transpose(1, 2, 3, 0).reshape(9, 30, raw_time_steps)
+    )
+    if time_steps is None:
+        return tensor
+    if pooling == "mean":
+        return F.adaptive_avg_pool1d(tensor, time_steps)
+    if pooling == "max":
+        return F.adaptive_max_pool1d(tensor, time_steps)
+    raise ValueError(f"Unsupported pooling {pooling!r}")
+
+
+def _fit_link_stats(
+    records: Sequence[WiMANSRecord],
+    raw_time_steps: int,
+    time_steps: int | None,
+    pad_side: str,
+    pooling: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    total = torch.zeros(9, dtype=torch.float64)
+    total_sq = torch.zeros(9, dtype=torch.float64)
+    values_per_link = 0
+    for record in records:
+        tensor = _preprocess_amplitude(
+            record.path, raw_time_steps, time_steps, pad_side, pooling
+        ).double()
+        total += tensor.sum(dim=(1, 2))
+        total_sq += tensor.square().sum(dim=(1, 2))
+        values_per_link += tensor.shape[1] * tensor.shape[2]
+    mean = total / values_per_link
+    variance = (total_sq / values_per_link - mean.square()).clamp_min(0)
+    std = variance.sqrt().clamp_min(1e-6)
+    return mean.float()[:, None, None], std.float()[:, None, None]
+
+
+class _WiMANSDataset(Dataset):
+    def __init__(
+        self,
+        records: Sequence[WiMANSRecord],
+        *,
+        target: str,
+        raw_time_steps: int,
+        time_steps: int | None,
+        pad_side: str,
+        pooling: str,
+        normalization: str,
+        link_stats: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ):
+        self.records = list(records)
+        self.target = target
+        self.raw_time_steps = raw_time_steps
+        self.time_steps = time_steps
+        self.pad_side = pad_side
+        self.pooling = pooling
+        self.normalization = normalization
+        self.link_stats = link_stats
+
+    def __len__(self):
+        return len(self.records)
+
+    def __getitem__(self, index):
+        record = self.records[index]
+        x = _preprocess_amplitude(
+            record.path,
+            self.raw_time_steps,
+            self.time_steps,
+            self.pad_side,
+            self.pooling,
+        )
+        if self.normalization == "sample":
+            mean = x.mean(dim=(1, 2), keepdim=True)
+            std = x.std(dim=(1, 2), keepdim=True, unbiased=False).clamp_min(1e-6)
+            x = (x - mean) / std
+        elif self.normalization == "train":
+            if self.link_stats is None:
+                raise RuntimeError("training normalization statistics are missing")
+            mean, std = self.link_stats
+            x = (x - mean) / std
+        y = torch.tensor(
+            record.count,
+            dtype=torch.long if self.target == "classification" else torch.float32,
+        )
+        return x, y
