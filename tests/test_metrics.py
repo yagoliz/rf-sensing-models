@@ -1,6 +1,13 @@
+import pytest
 import torch
 
-from rfsensing.eval.metrics import confusion_matrix, rank_k_accuracy
+from rfsensing.eval.metrics import (
+    confusion_matrix,
+    mean_absolute_error,
+    rank_k_accuracy,
+    rounded_accuracy,
+    tolerance_accuracy,
+)
 
 
 def test_rank_k_accuracy():
@@ -27,3 +34,21 @@ def test_confusion_matrix():
     cm = confusion_matrix(logits, targets, num_classes=3)
     expected = torch.tensor([[0, 0, 0], [0, 1, 0], [1, 0, 0]])
     assert torch.equal(cm, expected)
+
+
+def test_count_metrics_accept_integer_and_float_tensors():
+    predictions = torch.tensor([-0.5, 2.2, 5.8])
+    targets = torch.tensor([0, 3, 5])
+    assert mean_absolute_error(predictions, targets) == pytest.approx(0.7)
+    assert tolerance_accuracy(predictions, targets) == pytest.approx(1.0)
+    assert rounded_accuracy(predictions, targets) == pytest.approx(2 / 3)
+
+
+def test_count_metrics_validate_arguments():
+    predictions = torch.tensor([1.0, 2.0])
+    with pytest.raises(ValueError, match="same shape"):
+        mean_absolute_error(predictions, torch.tensor([[1.0, 2.0]]))
+    with pytest.raises(ValueError, match="non-negative"):
+        tolerance_accuracy(predictions, predictions, tolerance=-1)
+    with pytest.raises(ValueError, match="minimum"):
+        rounded_accuracy(predictions, predictions, minimum=5, maximum=0)
