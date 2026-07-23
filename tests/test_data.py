@@ -16,6 +16,12 @@ def test_synthetic_metadata():
     assert dm.sample_shape == (2, 8, 8)
     assert dm.num_classes == 3
     assert len(dm.class_names) == 3
+    assert dm.task_type == "classification"
+    assert dm.output_dim == 3
+    assert dm.ordered_values is None
+    assert dm.target_range is None
+    assert dm.checkpoint_monitor == "val/acc"
+    assert dm.checkpoint_mode == "max"
 
 
 def test_synthetic_batches():
