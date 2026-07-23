@@ -11,9 +11,9 @@ identification, and people counting. Its longer-term focus is robust,
 device-free person identification and group analysis under changes in subject,
 day, room, and sensing hardware.
 
-See [`../../MAIN_PROJECT.md`](../../MAIN_PROJECT.md) for the full project,
-including the OpenCPI/USRP X310 capture work. This repository focuses on
-datasets, models, training, and evaluation.
+The full project plan lives at `../../MAIN_PROJECT.md` in the parent
+RF Sensing workspace and includes the OpenCPI/USRP X310 capture work. This
+repository focuses on datasets, models, training, and evaluation.
 
 ## What works today
 
@@ -22,7 +22,7 @@ datasets, models, training, and evaluation.
 | Tasks | Activity classification, closed-set person classification, group-size classification, scalar count regression |
 | Datasets | UT_HAR, NTU-Fi HAR, NTU-Fi HumanID, Widar, WiMANS, and generated synthetic data |
 | Models | MLP, LeNet, LSTM/BiLSTM, ResNet-18, and ViT |
-| Representations | Dataset-provided CSI amplitude tensors; configurable WiMANS temporal pooling and normalization |
+| Representations | Dataset-provided CSI amplitude and Widar BVP tensors; configurable WiMANS temporal pooling and normalization |
 | Evaluation | Accuracy, rank-k accuracy, confusion matrices, count MAE, ±1-person accuracy, and rounded regression accuracy |
 | Training | Task-aware Lightning modules, best-checkpoint restoration, TensorBoard logging, and model embeddings |
 
@@ -82,11 +82,14 @@ WiMANS supports two views of group size:
 common = {
     "root": data_root,
     "time_steps": 300,
+    "pad_side": "left",        # "left" or "right"
     "pooling": "mean",          # "mean" or "max"
     "normalization": "train",   # "train", "sample", or "none"
     "split_strategy": "group",
     "split_ratios": (0.70, 0.15, 0.15),
     "split_seed": 42,
+    "environments": None,       # e.g. ("classroom",)
+    "wifi_bands": None,         # e.g. ("2.4", "5")
     "batch_size": 32,
 }
 
@@ -118,6 +121,10 @@ exactly one split. This is more resistant to repetition leakage than a random
 sample split. Classification reports exact accuracy, MAE, and ±1-person
 accuracy. Regression reports raw MAE, ±1-person accuracy, and rounded exact
 accuracy, and checkpoints on minimum validation MAE.
+
+Set `split_strategy="random"` for a count-stratified sample split when
+comparing with less restrictive protocols. `environments` and `wifi_bands`
+filter annotations before file validation and splitting.
 
 ## Datasets
 
@@ -196,6 +203,11 @@ owns RF acquisition; `rfsensing` will consume its stable exported format.
 Register a DataModule with:
 
 ```python
+from pathlib import Path
+
+import torch
+from torch.utils.data import TensorDataset
+
 from rfsensing import data
 from rfsensing.data import CSIDataModule
 
@@ -205,6 +217,28 @@ class MyDataModule(CSIDataModule):
     name = "my_dataset"
     sample_shape = (3, 30, 100)
     class_names = ["class_0", "class_1"]
+
+    def __init__(self, root, batch_size=64, num_workers=0):
+        super().__init__(batch_size=batch_size, num_workers=num_workers)
+        self.root = Path(root)
+
+    def setup(self, stage=None):
+        generator = torch.Generator().manual_seed(0)
+        x = torch.randn(32, *self.sample_shape, generator=generator)
+        y = torch.arange(32) % self.num_classes
+        dataset = TensorDataset(x, y)
+        self.train_set = dataset
+        self.val_set = dataset
+        self.test_set = dataset
+
+    def train_dataloader(self):
+        return self._loader(self.train_set, shuffle=True)
+
+    def val_dataloader(self):
+        return self._loader(self.val_set)
+
+    def test_dataloader(self):
+        return self._loader(self.test_set)
 ```
 
 A sample is `(x, y)`: `x` is a `float32` tensor shaped as `sample_shape`;
