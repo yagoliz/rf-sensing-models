@@ -5,11 +5,13 @@ import numpy as np
 import pytest
 import torch
 
+from rfsensing import data
 from rfsensing.data.wimans import (
     _WiMANSDataset,
     _load_records,
     _preprocess_amplitude,
 )
+from tests.conftest import DATA_ROOT, requires_wimans
 
 
 def _make_wimans_tree(
@@ -184,3 +186,152 @@ def test_sample_normalization_is_per_link(tmp_path):
     assert torch.allclose(
         x.std(dim=(1, 2), unbiased=False), torch.ones(9), atol=1e-5
     )
+
+
+def test_wimans_group_split_is_deterministic_stratified_and_disjoint(tmp_path):
+    _make_wimans_tree(tmp_path)
+    first = data.build(
+        "wimans",
+        root=tmp_path,
+        target="classification",
+        raw_time_steps=12,
+        time_steps=3,
+        normalization="none",
+        split_seed=17,
+        batch_size=4,
+    )
+    second = data.build(
+        "wimans",
+        root=tmp_path,
+        target="classification",
+        raw_time_steps=12,
+        time_steps=3,
+        normalization="none",
+        split_seed=17,
+        batch_size=4,
+    )
+    first.setup()
+    second.setup()
+    assert first.split_group_ids == second.split_group_ids
+    train = first.split_group_ids["train"]
+    val = first.split_group_ids["val"]
+    test = first.split_group_ids["test"]
+    assert train.isdisjoint(val)
+    assert train.isdisjoint(test)
+    assert val.isdisjoint(test)
+    for records in first.split_records.values():
+        assert {record.count for record in records} == set(range(6))
+
+
+def test_wimans_target_metadata_and_batches(tmp_path):
+    _make_wimans_tree(tmp_path)
+    classification = data.build(
+        "wimans",
+        root=tmp_path,
+        target="classification",
+        raw_time_steps=12,
+        time_steps=3,
+        normalization="none",
+        batch_size=4,
+    )
+    regression = data.build(
+        "wimans",
+        root=tmp_path,
+        target="regression",
+        raw_time_steps=12,
+        time_steps=3,
+        normalization="none",
+        batch_size=4,
+    )
+    classification.setup()
+    regression.setup()
+    assert classification.split_group_ids == regression.split_group_ids
+    assert classification.output_dim == 6
+    assert classification.ordered_values == tuple(float(i) for i in range(6))
+    assert regression.output_dim == 1
+    assert regression.task_type == "regression"
+    assert regression.checkpoint_monitor == "val/mae"
+    x_class, y_class = next(iter(classification.train_dataloader()))
+    x_reg, y_reg = next(iter(regression.train_dataloader()))
+    assert x_class.shape[1:] == x_reg.shape[1:] == (9, 30, 3)
+    assert torch.equal(
+        classification.train_set[0][0], regression.train_set[0][0]
+    )
+    assert y_class.dtype == torch.int64
+    assert y_reg.dtype == torch.float32
+
+
+def test_wimans_training_normalization_uses_training_records(tmp_path):
+    _make_wimans_tree(tmp_path)
+    dm = data.build(
+        "wimans",
+        root=tmp_path,
+        raw_time_steps=12,
+        time_steps=3,
+        normalization="train",
+        batch_size=16,
+    )
+    dm.setup()
+    xs = torch.stack([dm.train_set[index][0] for index in range(len(dm.train_set))])
+    link_means = xs.mean(dim=(0, 2, 3))
+    link_stds = xs.std(dim=(0, 2, 3), unbiased=False)
+    assert torch.allclose(link_means, torch.zeros(9), atol=1e-5)
+    assert torch.allclose(link_stds, torch.ones(9), atol=1e-5)
+
+
+def test_wimans_rejects_invalid_configuration(tmp_path):
+    _make_wimans_tree(tmp_path)
+    with pytest.raises(ValueError, match="target"):
+        data.build("wimans", root=tmp_path, target="ordinal")
+    with pytest.raises(ValueError, match="split_ratios"):
+        data.build("wimans", root=tmp_path, split_ratios=(0.8, 0.2, 0.2))
+    with pytest.raises(ValueError, match="time_steps"):
+        data.build("wimans", root=tmp_path, raw_time_steps=12, time_steps=13)
+
+
+def test_group_split_rejects_too_few_groups_per_count(tmp_path):
+    _make_wimans_tree(tmp_path, groups_per_count=2, samples_per_group=1)
+    dm = data.build(
+        "wimans",
+        root=tmp_path,
+        raw_time_steps=12,
+        time_steps=3,
+        normalization="none",
+    )
+    with pytest.raises(ValueError, match="at least 3 groups per count"):
+        dm.setup()
+
+
+def test_random_split_is_available_for_paper_comparison(tmp_path):
+    _make_wimans_tree(tmp_path)
+    dm = data.build(
+        "wimans",
+        root=tmp_path,
+        raw_time_steps=12,
+        time_steps=3,
+        normalization="none",
+        split_strategy="random",
+    )
+    dm.setup()
+    assert sum(len(records) for records in dm.split_records.values()) == 96
+    for records in dm.split_records.values():
+        assert {record.count for record in records} == set(range(6))
+
+
+@pytest.mark.data
+@requires_wimans
+def test_wimans_real_data_contract():
+    dm = data.build(
+        "wimans",
+        root=DATA_ROOT,
+        target="classification",
+        time_steps=30,
+        normalization="none",
+        batch_size=2,
+    )
+    dm.setup()
+    x, y = next(iter(dm.train_dataloader()))
+    assert x.shape == (2, 9, 30, 30)
+    assert x.dtype == torch.float32
+    assert y.dtype == torch.int64
+    assert dm.output_dim == 6

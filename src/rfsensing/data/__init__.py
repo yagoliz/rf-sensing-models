@@ -7,5 +7,5 @@ register = _registry.register
 build = _registry.build
 list_available = _registry.available
 
-from rfsensing.data import ntu_fi, synthetic, ut_har, widar  # noqa: E402, F401
+from rfsensing.data import ntu_fi, synthetic, ut_har, widar, wimans  # noqa: E402, F401
 from rfsensing.data.base import CSIDataModule  # noqa: E402, F401
