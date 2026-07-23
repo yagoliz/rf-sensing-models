@@ -1,7 +1,7 @@
 [project]
 name = "rfsensing"
 version = "0.1.0"
-description = "RF-sensing (WiFi CSI) models and benchmarks, reimplemented from SenseFi"
+description = "WiFi CSI sensing datasets, models, training, and benchmarks"
 requires-python = ">=3.11"
 dependencies = [
     "torch>=2.2",
@@ -32,5 +32,5 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "data: requires the SenseFi benchmark datasets under the project data/ dir",
+    "data: requires complete external WiFi CSI benchmark datasets",
 ]
