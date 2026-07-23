@@ -1,8 +1,10 @@
 import pytest
 import torch
 import torch.nn as nn
+from torch.utils.data import TensorDataset
 
 from rfsensing import data, models, train
+from rfsensing.data.base import CSIDataModule
 from rfsensing.train.module import ClassificationModule, RegressionModule
 
 
@@ -99,3 +101,54 @@ def test_regression_training_step_returns_scalar_loss(monkeypatch):
     )
     assert loss.ndim == 0
     assert loss.requires_grad
+
+
+class _SyntheticRegressionDataModule(CSIDataModule):
+    name = "synthetic_regression"
+    sample_shape = (1, 4, 4)
+    class_names = []
+    task_type = "regression"
+    target_range = (0.0, 5.0)
+    checkpoint_monitor = "val/mae"
+    checkpoint_mode = "min"
+
+    @property
+    def output_dim(self):
+        return 1
+
+    def setup(self, stage=None):
+        generator = torch.Generator().manual_seed(7)
+        x = torch.randn(48, *self.sample_shape, generator=generator)
+        y = (x.mean(dim=(1, 2, 3)) + 2.5).clamp(0, 5)
+        dataset = TensorDataset(x, y)
+        self.train_set = dataset
+        self.val_set = dataset
+        self.test_set = dataset
+
+    def train_dataloader(self):
+        return self._loader(self.train_set, shuffle=True)
+
+    def val_dataloader(self):
+        return self._loader(self.val_set)
+
+    def test_dataloader(self):
+        return self._loader(self.test_set)
+
+
+def test_run_end_to_end_regression(tmp_path):
+    dm = _SyntheticRegressionDataModule(batch_size=8)
+    net = models.build(
+        "mlp", in_shape=dm.sample_shape, num_classes=dm.output_dim, hidden_dims=(16,)
+    )
+    result = train.run(
+        net,
+        dm,
+        max_epochs=2,
+        name="regression-smoke",
+        runs_dir=tmp_path,
+        accelerator="cpu",
+    )
+    assert {"test/mae", "test/within_1", "test/rounded_acc"} <= result.metrics.keys()
+    assert result.metrics["test/mae"] >= 0
+    assert result.checkpoint_path.exists()
+    assert train.load_best_net(net, result) is net
