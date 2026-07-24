@@ -3071,6 +3071,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "ipykernel" },
+    { name = "ipywidgets" },
     { name = "jupyter" },
     { name = "jupytext" },
     { name = "matplotlib" },
@@ -3094,6 +3095,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "ipykernel", specifier = ">=6" },
+    { name = "ipywidgets", specifier = ">=8.1.8" },
     { name = "jupyter", specifier = ">=1.1.1" },
     { name = "jupytext", specifier = ">=1.16" },
     { name = "matplotlib", specifier = ">=3.8" },
