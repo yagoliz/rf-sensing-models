@@ -7,6 +7,7 @@ from rfsensing.train.module import (  # noqa: F401
 from rfsensing.train.reid import (  # noqa: F401
     ReIDModule,
     batch_hard_triplet_loss,
+    supcon_loss,
 )
 from rfsensing.train.reid_run import (  # noqa: F401
     ReIDResult,

@@ -45,6 +45,39 @@ def batch_hard_triplet_loss(
     return F.relu(hardest_positive - hardest_negative + margin).mean()
 
 
+def supcon_loss(
+    embeddings: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    temperature: float = 0.1,
+) -> torch.Tensor:
+    """Supervised contrastive loss (Khosla et al. 2020) over one P×K batch.
+
+    Unlike the margin triplet loss, the log-sum-exp over all negatives keeps
+    pushing every negative away, spreading identities over the hypersphere
+    instead of stopping at a fixed margin — which widens the gap between
+    genuine and impostor cosine scores.
+    """
+    if temperature <= 0:
+        raise ValueError(f"temperature must be positive, got {temperature}")
+    labels = labels.reshape(-1)
+    z = F.normalize(embeddings.float(), dim=1)
+    same = labels.unsqueeze(0) == labels.unsqueeze(1)
+    eye = torch.eye(len(labels), dtype=torch.bool, device=labels.device)
+    positive_mask = same & ~eye
+    negative_mask = ~same
+    if not positive_mask.any(dim=1).all():
+        raise ValueError("every anchor needs at least one positive in the batch")
+    if not negative_mask.any(dim=1).all():
+        raise ValueError("every anchor needs at least one negative in the batch")
+    similarities = (z @ z.T / temperature).masked_fill(eye, -torch.inf)
+    log_prob = similarities - similarities.logsumexp(dim=1, keepdim=True)
+    mean_log_prob_positive = (
+        (log_prob * positive_mask).sum(dim=1) / positive_mask.sum(dim=1)
+    )
+    return -mean_log_prob_positive.mean()
+
+
 class ReIDModule(_SupervisedModule):
     """Lightning module for open-set Re-ID embedding training.
 
@@ -58,8 +91,10 @@ class ReIDModule(_SupervisedModule):
         net: nn.Module,
         num_train_identities: int,
         *,
+        objective: str = "triplet",
         triplet_margin: float = 0.3,
         triplet_weight: float = 1.0,
+        supcon_temperature: float = 0.1,
         lr: float = 1e-3,
         weight_decay: float = 0.01,
     ):
@@ -74,10 +109,18 @@ class ReIDModule(_SupervisedModule):
                 f"classifier width {out_features} does not match "
                 f"{num_train_identities} training identities"
             )
+        if objective not in ("triplet", "supcon"):
+            raise ValueError(
+                f"objective must be 'triplet' or 'supcon', got {objective!r}"
+            )
         if triplet_weight < 0:
             raise ValueError(f"triplet_weight must be >= 0, got {triplet_weight}")
         if triplet_margin <= 0:
             raise ValueError(f"triplet_margin must be > 0, got {triplet_margin}")
+        if supcon_temperature <= 0:
+            raise ValueError(
+                f"supcon_temperature must be > 0, got {supcon_temperature}"
+            )
         super().__init__(net, lr, weight_decay)
         self.criterion = nn.CrossEntropyLoss()
         self._val_embeddings: dict[int, list[torch.Tensor]] = {0: [], 1: []}
@@ -88,13 +131,20 @@ class ReIDModule(_SupervisedModule):
         raw = self.net.embed(x)
         logits = self.net.head(raw)
         ce_loss = self.criterion(logits, y)
-        triplet_loss = batch_hard_triplet_loss(
-            F.normalize(raw, dim=1), y, margin=self.hparams.triplet_margin
-        )
-        loss = ce_loss + self.hparams.triplet_weight * triplet_loss
+        z = F.normalize(raw, dim=1)
+        if self.hparams.objective == "triplet":
+            metric_loss = batch_hard_triplet_loss(
+                z, y, margin=self.hparams.triplet_margin
+            )
+        else:
+            metric_loss = supcon_loss(
+                z, y, temperature=self.hparams.supcon_temperature
+            )
+        # triplet_weight weights the metric-learning term for both objectives.
+        loss = ce_loss + self.hparams.triplet_weight * metric_loss
         self.log("train/loss", loss, prog_bar=True)
         self.log("train/ce_loss", ce_loss)
-        self.log("train/triplet_loss", triplet_loss)
+        self.log(f"train/{self.hparams.objective}_loss", metric_loss)
         return loss
 
     def on_train_epoch_start(self):

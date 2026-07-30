@@ -1,4 +1,4 @@
-"""Gallery–probe retrieval and open-set rejection metrics.
+"""Gallery-probe retrieval and open-set rejection metrics.
 
 Independent of any dataset: callers pass embeddings, stable identity labels,
 and known/unknown probe masks. Probes are scored against every gallery sample

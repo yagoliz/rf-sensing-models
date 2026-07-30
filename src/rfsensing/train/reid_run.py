@@ -8,15 +8,15 @@ manifest, best checkpoint, per-probe predictions, and a JSON summary.
 import csv
 import json
 import statistics
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Sequence
 
 import lightning as L
 import torch
-import torch.nn as nn
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import TensorBoardLogger
+from torch import nn
 
 from rfsensing.data.base import CSIDataModule
 from rfsensing.eval.reid import (

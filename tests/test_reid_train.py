@@ -263,3 +263,83 @@ def test_module_validation_works_on_mps(monkeypatch):
     module.validation_step(probes, 0, 1)
     module.on_validation_epoch_end()
     assert {"val/mAP", "val/rank1", "val/rank3"} <= logged.keys()
+
+
+# --- supcon_loss ---
+
+
+def test_supcon_loss_hand_calculated():
+    from rfsensing.train.reid import supcon_loss
+
+    embeddings = _unit([1.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0])
+    labels = torch.tensor([0, 0, 1, 1])
+    loss = supcon_loss(embeddings, labels, temperature=1.0)
+    # Every anchor: one positive at sim 1, two negatives at sim 0
+    #   -> -log(e / (e + 2)) each.
+    expected = math.log(math.e + 2) - 1.0
+    assert loss.item() == pytest.approx(expected, abs=1e-5)
+
+
+def test_supcon_loss_rewards_separation():
+    from rfsensing.train.reid import supcon_loss
+
+    labels = torch.tensor([0, 0, 1, 1, 2, 2, 3, 3])
+    separated = F.normalize(
+        torch.eye(4).repeat_interleave(2, dim=0)
+        + 0.01 * torch.randn(8, 4, generator=torch.Generator().manual_seed(0)),
+        dim=1,
+    )
+    collapsed = F.normalize(torch.ones(8, 4), dim=1)
+    assert supcon_loss(separated, labels, temperature=0.5) < supcon_loss(
+        collapsed, labels, temperature=0.5
+    )
+
+
+def test_supcon_loss_propagates_gradients():
+    from rfsensing.train.reid import supcon_loss
+
+    raw = torch.randn(8, 4, requires_grad=True)
+    labels = torch.tensor([0, 0, 1, 1, 2, 2, 3, 3])
+    loss = supcon_loss(F.normalize(raw, dim=1), labels)
+    loss.backward()
+    assert raw.grad is not None
+    assert torch.isfinite(raw.grad).all()
+
+
+def test_supcon_loss_rejects_invalid_batches():
+    from rfsensing.train.reid import supcon_loss
+
+    embeddings = _unit([1.0, 0.0], [0.0, 1.0])
+    with pytest.raises(ValueError, match="positive"):
+        supcon_loss(embeddings, torch.tensor([0, 1]))
+    with pytest.raises(ValueError, match="negative"):
+        supcon_loss(embeddings, torch.tensor([0, 0]))
+    with pytest.raises(ValueError, match="temperature"):
+        supcon_loss(embeddings, torch.tensor([0, 0]), temperature=0.0)
+
+
+# --- ReIDModule objective selection ---
+
+
+def test_module_supcon_objective(monkeypatch):
+    module = ReIDModule(
+        _net(), num_train_identities=4, objective="supcon", triplet_weight=2.0
+    )
+    logged = _logged(module, monkeypatch)
+    batch = (torch.randn(8, *IN_SHAPE), torch.tensor([0, 0, 1, 1, 2, 2, 3, 3]))
+    loss = module.training_step(batch, 0)
+    assert "train/supcon_loss" in logged
+    assert "train/triplet_loss" not in logged
+    assert loss.item() == pytest.approx(
+        logged["train/ce_loss"].item() + 2.0 * logged["train/supcon_loss"].item()
+    )
+
+
+def test_module_rejects_invalid_objective():
+    with pytest.raises(ValueError, match="objective"):
+        ReIDModule(_net(), num_train_identities=4, objective="arcface")
+    with pytest.raises(ValueError, match="temperature"):
+        ReIDModule(
+            _net(), num_train_identities=4, objective="supcon",
+            supcon_temperature=0.0,
+        )
