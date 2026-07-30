@@ -1,12 +1,16 @@
 from collections import Counter
 
 import pytest
+import torch
 
+from rfsensing import data
 from rfsensing.data.reid import (
     IdentityBatchSampler,
     IdentitySplit,
     make_identity_split,
 )
+
+from tests.conftest import DATA_ROOT, requires_ntu_humanid
 
 IDENTITIES = [f"{i:03d}" for i in range(1, 15)]
 
@@ -196,3 +200,156 @@ def test_sampler_rejects_invalid_configuration():
         IdentityBatchSampler([], 2, 2)
     with pytest.raises(ValueError, match="integer"):
         IdentityBatchSampler([0.5] * 4 + [1.5] * 4, 2, 2)
+
+
+# --- NTUFiHumanIDReIDDataModule ---
+
+
+@pytest.fixture(scope="module")
+def reid_dm(fake_ntu_root):
+    dm = data.build(
+        "ntu_fi_humanid_reid",
+        root=fake_ntu_root,
+        split_seed=42,
+        identities_per_batch=3,
+        samples_per_identity=2,
+        eval_batch_size=4,
+    )
+    dm.setup("fit")
+    dm.setup("test")
+    return dm
+
+
+def test_reid_missing_root_raises(tmp_path):
+    with pytest.raises(FileNotFoundError, match="Expected layout"):
+        data.build("ntu_fi_humanid_reid", root=tmp_path)
+
+
+def test_reid_metadata(reid_dm):
+    assert reid_dm.name == "ntu_fi_humanid_reid"
+    assert reid_dm.task_type == "reid"
+    assert reid_dm.sample_shape == (3, 114, 500)
+    assert reid_dm.output_dim == 7
+    assert reid_dm.num_classes == 7
+    assert reid_dm.checkpoint_monitor == "val/mAP"
+    assert reid_dm.checkpoint_mode == "max"
+    assert len(reid_dm.identity_names) == 14
+    assert reid_dm.identity_names == sorted(reid_dm.identity_names)
+
+
+def test_reid_split_manifest(reid_dm):
+    manifest = reid_dm.split_manifest
+    assert manifest.seed == 42
+    assert manifest == make_identity_split(reid_dm.identity_names, seed=42)
+    assert list(reid_dm.class_names) == list(manifest.train)
+
+
+def test_reid_train_batches_are_p_by_k(reid_dm):
+    loader = reid_dm.train_dataloader()
+    assert isinstance(loader.batch_sampler, IdentityBatchSampler)
+    x, y = next(iter(loader))
+    assert x.shape == (6, 3, 114, 500)
+    assert x.dtype == torch.float32
+    assert y.dtype == torch.int64
+    counts = Counter(y.tolist())
+    assert len(counts) == 3
+    assert all(count == 2 for count in counts.values())
+
+
+def test_reid_train_labels_are_contiguous(reid_dm):
+    labels = set(reid_dm.train_set.labels)
+    assert labels == set(range(7))
+
+
+def test_reid_role_sources_follow_protocol(reid_dm):
+    manifest = reid_dm.split_manifest
+    for split_roles, loaders in (
+        (
+            (manifest.val_enrolled, manifest.val_unknown),
+            reid_dm.validation_loaders_by_role(),
+        ),
+        (
+            (manifest.test_enrolled, manifest.test_unknown),
+            reid_dm.test_loaders_by_role(),
+        ),
+    ):
+        enrolled, unknown = split_roles
+        assert set(loaders) == {"gallery", "known_probes", "unknown_probes"}
+        for f in loaders["gallery"].dataset.files:
+            assert f.parent.parent.name == "train_amp"
+            assert f.parent.name in enrolled
+        for f in loaders["known_probes"].dataset.files:
+            assert f.parent.parent.name == "test_amp"
+            assert f.parent.name in enrolled
+        for f in loaders["unknown_probes"].dataset.files:
+            assert f.parent.parent.name == "test_amp"
+            assert f.parent.name in unknown
+
+
+def test_reid_train_files_only_from_training_identities(reid_dm):
+    manifest = reid_dm.split_manifest
+    for f in reid_dm.train_set.files:
+        assert f.parent.parent.name == "train_amp"
+        assert f.parent.name in manifest.train
+
+
+def test_reid_eval_labels_are_stable_subject_ids(reid_dm):
+    loaders = reid_dm.test_loaders_by_role()
+    names = reid_dm.identity_names
+    for role, loader in loaders.items():
+        dataset = loader.dataset
+        for f, label in zip(dataset.files, dataset.labels):
+            assert names[label] == f.parent.name
+
+
+def test_reid_val_dataloader_is_gallery_then_known_probes(reid_dm):
+    val_loaders = reid_dm.val_dataloader()
+    by_role = reid_dm.validation_loaders_by_role()
+    assert len(val_loaders) == 2
+    assert val_loaders[0].dataset.files == by_role["gallery"].dataset.files
+    assert (
+        val_loaders[1].dataset.files == by_role["known_probes"].dataset.files
+    )
+
+
+def test_reid_setup_is_idempotent(reid_dm):
+    files_before = list(reid_dm.train_set.files)
+    reid_dm.setup("fit")
+    reid_dm.setup("test")
+    assert list(reid_dm.train_set.files) == files_before
+
+
+def test_reid_closed_set_loader_unchanged(fake_ntu_root):
+    dm = data.build("ntu_fi_humanid", root=fake_ntu_root, batch_size=2)
+    assert dm.num_classes == 14
+    assert dm.task_type == "classification"
+    dm.setup("fit")
+    x, y = next(iter(dm.train_dataloader()))
+    assert x.shape == (2, 3, 114, 500)
+    assert y.dtype == torch.int64
+
+
+@pytest.mark.data
+@requires_ntu_humanid
+def test_reid_real_data_contract():
+    dm = data.build("ntu_fi_humanid_reid", root=DATA_ROOT, split_seed=42)
+    assert len(dm.identity_names) == 14
+    dm.setup("fit")
+    dm.setup("test")
+    total_train = sum(
+        1
+        for _ in (dm.root / "train_amp").glob("*/*.mat")
+    )
+    total_test = sum(1 for _ in (dm.root / "test_amp").glob("*/*.mat"))
+    assert total_train == 294
+    assert total_test == 546
+    for loaders in (
+        dm.validation_loaders_by_role(),
+        dm.test_loaders_by_role(),
+    ):
+        for loader in loaders.values():
+            x, y = next(iter(loader))
+            assert x.shape[1:] == (3, 114, 500)
+            assert y.dtype == torch.int64
+    x, y = next(iter(dm.train_dataloader()))
+    assert x.shape[1:] == (3, 114, 500)

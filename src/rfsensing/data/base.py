@@ -17,7 +17,7 @@ class CSIDataModule(L.LightningDataModule):
     name: str
     sample_shape: tuple[int, ...]
     class_names: list[str]
-    task_type: Literal["classification", "regression"] = "classification"
+    task_type: Literal["classification", "regression", "reid"] = "classification"
     ordered_values: tuple[float, ...] | None = None
     target_range: tuple[float, float] | None = None
     checkpoint_monitor = "val/acc"
