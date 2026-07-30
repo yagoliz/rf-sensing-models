@@ -138,15 +138,15 @@ OPEN_SET = [
 ]
 
 
-def aggregate_table(metric_names):
+def aggregate_table(metric_names, prefix="reid"):
     rows = {}
     for encoder in ENCODERS:
         summary_path = (
-            RUNS_DIR / "ntu_fi_humanid_reid" / f"reid-{encoder}"
+            RUNS_DIR / "ntu_fi_humanid_reid" / f"{prefix}-{encoder}"
             / "aggregate_summary.json"
         )
         if not summary_path.exists():
-            print(f"no saved results for {encoder}; set RUN_TRAINING = True")
+            print(f"no saved results for {prefix}-{encoder}; run training first")
             continue
         stats = json.loads(summary_path.read_text())["metrics"]
         rows[encoder] = {
@@ -168,10 +168,15 @@ aggregate_table(OPEN_SET)
 # enrolled (known) probes should score higher than unknown probes.
 
 # %%
-prediction_files = sorted(
-    RUNS_DIR.glob("ntu_fi_humanid_reid/reid-*/seed*/version_*/predictions.csv")
-)
-if prediction_files:
+def score_histogram(prefix="reid"):
+    prediction_files = sorted(
+        RUNS_DIR.glob(
+            f"ntu_fi_humanid_reid/{prefix}-*/seed*/version_*/predictions.csv"
+        )
+    )
+    if not prediction_files:
+        print(f"no predictions saved under {prefix}-*; run training first")
+        return
     predictions = pd.concat(pd.read_csv(p) for p in prediction_files)
     fig, ax = plt.subplots(figsize=(7, 4))
     for flag, label in ((True, "known probes"), (False, "unknown probes")):
@@ -179,16 +184,72 @@ if prediction_files:
         ax.hist(subset["top_score"], bins=30, alpha=0.6, label=label)
     ax.set(xlabel="top gallery cosine score", ylabel="probes")
     ax.legend(frameon=False)
-else:
-    print("no predictions saved yet; set RUN_TRAINING = True")
+
+
+score_histogram()
+
+# %% [markdown]
+# ## Extended benchmark: more seeds, longer training
+#
+# In short runs the open-set numbers swing wildly between seeds because each
+# repeat's rejection statistics hinge on a **single** unknown test subject.
+# More repeats tighten the mean ± std (every seed rotates different subjects
+# through the enrolled/unknown roles), and more epochs mainly help the ViT,
+# which lags the ResNet in short runs.
+#
+# This section is separately opt-in and writes under `extended-reid-*`, so it
+# never overwrites the quick-run artifacts above. Expect it to take roughly
+# `len(EXTENDED_SEEDS) * EXTENDED_EPOCHS / (len(SEEDS) * EPOCHS)` times the
+# short benchmark.
+
+# %%
+RUN_EXTENDED = False
+EXTENDED_SEEDS = tuple(range(42, 50))  # 8 identity-role rotations
+EXTENDED_EPOCHS = 50
+
+if RUN_EXTENDED:
+    extended = {}
+    for encoder, kwargs in ENCODERS.items():
+        extended[encoder] = run_reid_repeats(
+            lambda dm: models.build(
+                encoder,
+                in_shape=dm.sample_shape,
+                num_classes=dm.output_dim,
+                **kwargs,
+            ),
+            make_dm,
+            seeds=EXTENDED_SEEDS,
+            max_epochs=EXTENDED_EPOCHS,
+            name=f"extended-reid-{encoder}",
+            runs_dir=RUNS_DIR,
+        )
+
+# %%
+aggregate_table(RETRIEVAL, prefix="extended-reid")
+
+# %%
+aggregate_table(OPEN_SET, prefix="extended-reid")
+
+# %% [markdown]
+# When comparing the extended table with the quick one, look at the std
+# columns first: retrieval metrics should be stable, while the
+# `far05_threshold` operating point keeps a large spread — that residual
+# variance comes from calibrating FAR on one unknown validation subject
+# (~39 probes), a limit of the 14-subject dataset rather than of training.
+
+# %%
+score_histogram("extended-reid")
 
 # %% [markdown]
 # ## Caveats
 #
-# - These short runs are a pipeline **smoke test**, not paper-comparable
-#   results: epochs, tuning, and repeats are all minimal.
+# - The quick runs above are a pipeline **smoke test**, not paper-comparable
+#   results: epochs, tuning, and repeats are all minimal. The extended
+#   benchmark is closer to reportable, but still inherits NTU-Fi's limits
+#   (one unknown subject per repeat).
 # - Rank-3 replaces rank-5 because only three identities are enrolled per
-#   test repeat.
+#   test repeat — and with exactly three enrolled, rank-3 is trivially 1.0;
+#   it only becomes informative with larger galleries.
 # - WhoFi-style architectures, ArcFace/supervised-contrastive objectives,
 #   and leave-one-day/room-out protocols are future work tracked in the
 #   README roadmap.
