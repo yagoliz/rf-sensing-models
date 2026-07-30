@@ -7,7 +7,7 @@ Information (CSI) datasets, training sensing models, and comparing evaluation
 protocols across public benchmarks and future in-house SDR captures.
 
 The project currently supports activity recognition, closed-set person
-identification, and people counting. Its longer-term focus is robust,
+identification, open-set person re-identification, and people counting. Its longer-term focus is robust,
 device-free person identification and group analysis under changes in subject,
 day, room, and sensing hardware.
 
@@ -19,12 +19,12 @@ repository focuses on datasets, models, training, and evaluation.
 
 | Area | Implemented capabilities |
 |---|---|
-| Tasks | Activity classification, closed-set person classification, group-size classification, scalar count regression |
-| Datasets | UT_HAR, NTU-Fi HAR, NTU-Fi HumanID, Widar, WiMANS, and generated synthetic data |
+| Tasks | Activity classification, closed-set person classification, open-set person re-identification with unknown rejection, group-size classification, scalar count regression |
+| Datasets | UT_HAR, NTU-Fi HAR, NTU-Fi HumanID (closed-set and identity-disjoint Re-ID views), Widar, WiMANS, and generated synthetic data |
 | Models | MLP, LeNet, LSTM/BiLSTM, ResNet-18, and ViT |
 | Representations | Dataset-provided CSI amplitude and Widar BVP tensors; configurable WiMANS temporal pooling and normalization |
-| Evaluation | Accuracy, rank-k accuracy, confusion matrices, count MAE, ±1-person accuracy, and rounded regression accuracy |
-| Training | Task-aware Lightning modules, best-checkpoint restoration, TensorBoard logging, and model embeddings |
+| Evaluation | Accuracy, rank-k accuracy, confusion matrices, count MAE, ±1-person accuracy, rounded regression accuracy, and gallery–probe retrieval/rejection metrics |
+| Training | Task-aware Lightning modules, joint classification + batch-hard triplet Re-ID training, best-checkpoint restoration, TensorBoard logging, and model embeddings |
 
 All DataModules and models share registry-based interfaces, so experiments are
 constructed from dataset metadata rather than hard-coded tensor dimensions.
@@ -126,6 +126,90 @@ Set `split_strategy="random"` for a count-stratified sample split when
 comparing with less restrictive protocols. `environments` and `wifi_bands`
 filter annotations before file validation and splitting.
 
+### Open-set person re-identification
+
+Closed-set classification, identity-disjoint Re-ID, and unknown rejection are
+three distinct tasks. `ntu_fi_humanid` trains and tests on the same 14
+subjects. `ntu_fi_humanid_reid` instead splits subjects by role — the default
+7/2/1/3/1 protocol assigns 7 training, 2 validation-enrolled,
+1 validation-unknown, 3 test-enrolled, and 1 test-unknown identities per
+deterministic seed — so evaluation subjects are never seen in training.
+Enrolled identities are matched by cosine similarity between probe and gallery
+embeddings; probes of unknown identities must additionally be rejected when
+their top gallery score falls below a threshold.
+
+Training draws identity-balanced P×K batches (P identities × K samples) and
+optimizes a joint objective: cross-entropy over the training identities plus a
+batch-hard triplet loss on L2-normalized embeddings. The best checkpoint is
+selected by validation mAP. Both rejection thresholds — the validation EER
+point and the strictest threshold with validation FAR ≤ 5% — are calibrated
+on validation scores only and applied unchanged to the test probes.
+
+```python
+from pathlib import Path
+
+from rfsensing import data, models
+from rfsensing.train import run_reid_repeats
+
+data_root = Path("../../data")
+
+
+def make_dm(seed):
+    return data.build(
+        "ntu_fi_humanid_reid",
+        root=data_root,
+        split_seed=seed,
+        identities_per_batch=4,
+        samples_per_identity=4,
+    )
+
+
+resnet_result = run_reid_repeats(
+    lambda dm: models.build(
+        "resnet18", in_shape=dm.sample_shape, num_classes=dm.output_dim
+    ),
+    make_dm,
+    seeds=(42, 43, 44),
+    max_epochs=50,
+    name="reid-resnet18",
+)
+
+vit_result = run_reid_repeats(
+    lambda dm: models.build(
+        "vit",
+        in_shape=dm.sample_shape,
+        num_classes=dm.output_dim,
+        patch_size=(38, 50),
+    ),
+    make_dm,
+    seeds=(42, 43, 44),
+    max_epochs=50,
+    name="reid-vit",
+)
+print(vit_result.aggregate_metrics["test/mAP"])
+```
+
+Metric interpretation:
+
+- **rank-1, rank-3, mAP** — retrieval quality over known probes only. Rank-3
+  replaces the customary rank-5 because only three identities are enrolled in
+  each test repeat, which would make rank-5 trivially perfect.
+- **AUROC, EER** — threshold-free known-versus-unknown detection quality of
+  the top gallery score.
+- **DIR, FAR, unknown-rejection rate, known acceptance** — operating-point
+  metrics at the validation-derived thresholds. DIR counts a known probe only
+  when it is both accepted and assigned the correct top identity, so
+  rejecting everything cannot look successful.
+
+Each repeat saves its artifacts under
+`runs/ntu_fi_humanid_reid/<name>/seed<seed>/version_<n>/`: the identity
+manifest (`manifest.json`), run configuration (`config.json`), best
+checkpoint, per-probe scores and thresholded predictions
+(`predictions.csv`), and metrics with threshold provenance (`summary.json`).
+`run_reid_repeats` writes mean ± sample standard deviation over seeds to
+`runs/ntu_fi_humanid_reid/<name>/aggregate_summary.json`. A single repeat is
+available as `rfsensing.train.run_reid`.
+
 ## Datasets
 
 | Registry name | Task | Sample shape | Classes/output | Default protocol |
@@ -133,6 +217,7 @@ filter annotations before file validation and splitting.
 | `ut_har` | Activity classification | `(1, 250, 90)` | 7 | Fixed train/validation/test |
 | `ntu_fi_har` | Activity classification | `(3, 114, 500)` | 6 | Fixed train/test; test also serves validation |
 | `ntu_fi_humanid` | Closed-set person classification | `(3, 114, 500)` | 14 | Fixed train/test; test also serves validation |
+| `ntu_fi_humanid_reid` | Open-set person re-identification | `(3, 114, 500)` | 7 train identities | Identity-disjoint 7/2/1/3/1 roles per seed |
 | `widar` | Gesture classification | `(22, 20, 20)` | 22 | Fixed train/test; test also serves validation |
 | `wimans` | People-count classification or regression | `(9, 30, 300)` by default | 6 or 1 | Deterministic group-held-out 70/15/15 |
 | `synthetic` | Test/smoke classification | Configurable | Configurable | Generated split |
@@ -169,6 +254,7 @@ The notebooks are experiment entry points rather than package internals:
 | `03_ntu_fi_humanid` | NTU-Fi closed-set person-identification benchmark |
 | `04_widar` | Widar gesture-recognition benchmark |
 | `05_wimans_counting` | WiMANS count classification versus regression |
+| `06_open_set_person_reid` | NTU-Fi identity-disjoint Re-ID with unknown rejection |
 
 Notebooks are paired Jupytext percent-format `.py` sources and generated
 `.ipynb` files. Edit the Python source, then regenerate:
@@ -182,8 +268,11 @@ uv run jupytext --to ipynb notebooks/05_wimans_counting.py
 The next steps align this package with the project’s individual and group
 sensing goals:
 
-- **Open-set person identification:** metric-learning objectives and
-  gallery–probe rank-1/rank-5/mAP evaluation.
+- **WhoFi reproduction:** a faithful WhoFi architecture and
+  published-protocol reproduction remains explicit future work; the current
+  ViT Re-ID baseline is a generic Transformer, not a WhoFi implementation.
+- **Richer Re-ID objectives:** ArcFace and supervised contrastive losses on
+  top of the existing joint cross-entropy + triplet training.
 - **Robustness protocols:** leave-one-day-out and leave-one-room-out splits
   instead of relying only on fixed or random splits.
 - **Temporal gait models:** CNN+GRU and temporal Transformer baselines for
@@ -191,7 +280,7 @@ sensing goals:
 - **Richer CSI representations:** sanitized phase, antenna-ratio features, and
   Doppler/spectrogram views.
 - **In-house SDR data:** an HDF5 DataModule for CSI exported by the
-  OpenCPI/USRP X310 capture pipeline.
+  OpenCPI/USRP X310 capture pipeline, including HDF5-backed Re-ID support.
 - **Group structure:** counting baselines first, followed by coarse spatial
   configuration classification when suitable labels are available.
 
