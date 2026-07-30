@@ -6,10 +6,12 @@ enrollment, or test unknown. Splits are generated from an explicit seed so
 repeated experiments are reproducible and serializable.
 """
 
+import math
 from dataclasses import asdict, dataclass
-from typing import Sequence
+from typing import Iterator, Sequence
 
 import numpy as np
+from torch.utils.data import Sampler
 
 _ROLE_FIELDS = (
     "train",
@@ -91,3 +93,75 @@ def make_identity_split(
     split = IdentitySplit(seed=seed, **roles)
     split.validate()
     return split
+
+
+class IdentityBatchSampler(Sampler[list[int]]):
+    """P×K batch sampler: P distinct identities, K samples per identity.
+
+    Batches are deterministic given ``seed`` and the epoch set through
+    :meth:`set_epoch`. Identities with fewer than K samples are sampled with
+    replacement; otherwise indices within a batch are drawn without
+    replacement.
+    """
+
+    def __init__(
+        self,
+        labels: Sequence[int],
+        identities_per_batch: int,
+        samples_per_identity: int,
+        *,
+        seed: int = 42,
+    ):
+        if len(labels) == 0:
+            raise ValueError("labels must not be empty")
+        if any(int(label) != label for label in labels):
+            raise ValueError("labels must be integer identity indices")
+        if identities_per_batch < 2:
+            raise ValueError(
+                f"identities_per_batch must be >= 2, got {identities_per_batch}"
+            )
+        if samples_per_identity < 2:
+            raise ValueError(
+                f"samples_per_identity must be >= 2, got {samples_per_identity}"
+            )
+        self._indices_by_label: dict[int, np.ndarray] = {}
+        for index, label in enumerate(labels):
+            self._indices_by_label.setdefault(int(label), []).append(index)
+        if len(self._indices_by_label) < identities_per_batch:
+            raise ValueError(
+                f"need at least {identities_per_batch} distinct identities, "
+                f"got {len(self._indices_by_label)}"
+            )
+        self._indices_by_label = {
+            label: np.asarray(indices)
+            for label, indices in self._indices_by_label.items()
+        }
+        self.identities_per_batch = identities_per_batch
+        self.samples_per_identity = samples_per_identity
+        self.seed = seed
+        self._epoch = 0
+        batch = identities_per_batch * samples_per_identity
+        self._num_batches = max(1, math.ceil(len(labels) / batch))
+
+    def set_epoch(self, epoch: int) -> None:
+        self._epoch = epoch
+
+    def __len__(self) -> int:
+        return self._num_batches
+
+    def __iter__(self) -> Iterator[list[int]]:
+        rng = np.random.default_rng(self.seed + self._epoch)
+        identities = sorted(self._indices_by_label)
+        for _ in range(self._num_batches):
+            chosen = rng.choice(
+                len(identities), size=self.identities_per_batch, replace=False
+            )
+            batch: list[int] = []
+            for identity_pos in chosen:
+                pool = self._indices_by_label[identities[identity_pos]]
+                replace = len(pool) < self.samples_per_identity
+                picks = rng.choice(
+                    pool, size=self.samples_per_identity, replace=replace
+                )
+                batch.extend(int(i) for i in picks)
+            yield batch

@@ -1,6 +1,12 @@
+from collections import Counter
+
 import pytest
 
-from rfsensing.data.reid import IdentitySplit, make_identity_split
+from rfsensing.data.reid import (
+    IdentityBatchSampler,
+    IdentitySplit,
+    make_identity_split,
+)
 
 IDENTITIES = [f"{i:03d}" for i in range(1, 15)]
 
@@ -116,3 +122,77 @@ def test_validate_rejects_empty_role():
     )
     with pytest.raises(ValueError, match="val_enrolled"):
         split.validate()
+
+
+# --- IdentityBatchSampler ---
+
+LABELS = [0] * 6 + [1] * 6 + [2] * 6 + [3] * 3
+
+
+def _batches(sampler):
+    return [list(batch) for batch in sampler]
+
+
+def test_sampler_batches_have_p_identities_k_samples():
+    sampler = IdentityBatchSampler(LABELS, 3, 4, seed=0)
+    for batch in sampler:
+        assert len(batch) == 12
+        counts = Counter(LABELS[i] for i in batch)
+        assert len(counts) == 3
+        assert all(count == 4 for count in counts.values())
+
+
+def test_sampler_epoch_length_covers_dataset():
+    sampler = IdentityBatchSampler(LABELS, 3, 4, seed=0)
+    # ceil(21 / 12) == 2
+    assert len(sampler) == 2
+    assert len(_batches(sampler)) == 2
+    tiny = IdentityBatchSampler([0, 0, 1, 1], 2, 2, seed=0)
+    assert len(tiny) == 1
+
+
+def test_sampler_deterministic_for_seed_and_epoch():
+    a = IdentityBatchSampler(LABELS, 3, 4, seed=5)
+    b = IdentityBatchSampler(LABELS, 3, 4, seed=5)
+    a.set_epoch(2)
+    b.set_epoch(2)
+    assert _batches(a) == _batches(b)
+
+
+def test_sampler_changes_across_epochs():
+    sampler = IdentityBatchSampler(LABELS, 3, 4, seed=5)
+    sampler.set_epoch(0)
+    first = _batches(sampler)
+    sampler.set_epoch(1)
+    second = _batches(sampler)
+    assert first != second
+
+
+def test_sampler_replacement_for_small_identities():
+    # identity 3 has 3 samples < K=4: replacement must fill the batch.
+    sampler = IdentityBatchSampler(LABELS, 4, 4, seed=1)
+    for batch in sampler:
+        counts = Counter(LABELS[i] for i in batch)
+        assert counts[3] == 4 if 3 in counts else True
+    # identities with >= K samples must not repeat indices within a batch
+    sampler = IdentityBatchSampler(LABELS, 3, 4, seed=1)
+    for batch in sampler:
+        by_label = {}
+        for i in batch:
+            by_label.setdefault(LABELS[i], []).append(i)
+        for label, indices in by_label.items():
+            if LABELS.count(label) >= 4:
+                assert len(set(indices)) == len(indices)
+
+
+def test_sampler_rejects_invalid_configuration():
+    with pytest.raises(ValueError, match="identities_per_batch"):
+        IdentityBatchSampler(LABELS, 1, 4)
+    with pytest.raises(ValueError, match="samples_per_identity"):
+        IdentityBatchSampler(LABELS, 2, 1)
+    with pytest.raises(ValueError, match="distinct identities"):
+        IdentityBatchSampler([0] * 8 + [1] * 8, 3, 4)
+    with pytest.raises(ValueError, match="empty"):
+        IdentityBatchSampler([], 2, 2)
+    with pytest.raises(ValueError, match="integer"):
+        IdentityBatchSampler([0.5] * 4 + [1.5] * 4, 2, 2)
