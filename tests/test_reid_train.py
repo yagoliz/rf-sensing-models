@@ -204,3 +204,36 @@ def test_module_supports_reference_encoders(name, kwargs, monkeypatch):
     module.validation_step((x[4:], torch.tensor([3, 7, 3, 7])), 0, 1)
     module.on_validation_epoch_end()
     assert "val/mAP" in logged
+
+
+def test_vit_one_step_contract_on_generated_ntu(fake_ntu_root, monkeypatch):
+    from rfsensing import data
+
+    dm = data.build(
+        "ntu_fi_humanid_reid",
+        root=fake_ntu_root,
+        split_seed=42,
+        identities_per_batch=2,
+        samples_per_identity=2,
+        eval_batch_size=4,
+    )
+    dm.setup("fit")
+    net = models.build(
+        "vit",
+        in_shape=dm.sample_shape,
+        num_classes=dm.output_dim,
+        patch_size=(38, 100),
+        embed_dim=16,
+        depth=1,
+        num_heads=2,
+    )
+    module = ReIDModule(net, num_train_identities=dm.output_dim)
+    logged = _logged(module, monkeypatch)
+    x, y = next(iter(dm.train_dataloader()))
+    loss = module.training_step((x, y), 0)
+    assert torch.isfinite(loss)
+    gallery, probes = dm.val_dataloader()
+    module.validation_step(next(iter(gallery)), 0, 0)
+    module.validation_step(next(iter(probes)), 0, 1)
+    module.on_validation_epoch_end()
+    assert {"val/mAP", "val/rank1", "val/rank3"} <= logged.keys()

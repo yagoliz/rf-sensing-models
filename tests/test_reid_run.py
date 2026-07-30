@@ -403,3 +403,53 @@ def test_repeats_require_seeds(tmp_path):
         run_reid_repeats(
             _tiny_net, _TinyReIDDataModule, seeds=(), runs_dir=tmp_path
         )
+
+
+# --- end-to-end on a generated NTU-Fi tree ---
+
+
+def test_run_reid_end_to_end_generated_ntu(fake_ntu_root, tmp_path):
+    from rfsensing import data
+
+    dm = data.build(
+        "ntu_fi_humanid_reid",
+        root=fake_ntu_root,
+        split_seed=42,
+        identities_per_batch=3,
+        samples_per_identity=2,
+        eval_batch_size=4,
+    )
+    net = models.build(
+        "resnet18",
+        in_shape=dm.sample_shape,
+        num_classes=dm.output_dim,
+        base_width=8,
+    )
+    result = run_reid(
+        net,
+        dm,
+        max_epochs=1,
+        name="e2e",
+        seed=42,
+        accelerator="cpu",
+        runs_dir=tmp_path,
+    )
+    assert result.checkpoint_path.exists()
+    assert result.manifest_path.exists()
+    summary = json.loads(result.summary_path.read_text())
+    assert summary["thresholds"]["calibrated_on"] == "validation"
+    with result.predictions_path.open() as f:
+        rows = list(csv.DictReader(f))
+    # 3 test-enrolled identities x 2 test samples + 1 unknown x 2 samples.
+    assert len(rows) == 8
+    manifest = json.loads(result.manifest_path.read_text())
+    assert sorted(
+        manifest["train"]
+        + manifest["val_enrolled"]
+        + manifest["val_unknown"]
+        + manifest["test_enrolled"]
+        + manifest["test_unknown"]
+    ) == dm.identity_names
+    for key in ("test/mAP", "test/auroc", "test/eer_threshold/dir"):
+        assert key in result.metrics
+        assert 0.0 <= result.metrics[key] <= 1.0
