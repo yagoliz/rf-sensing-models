@@ -89,6 +89,9 @@ def test_readme_documents_open_set_reid():
     for item in ("WhoFi", "ArcFace", "supervised contrastive", "HDF5"):
         assert item in roadmap
 
+    assert "supcon" in source
+    assert "top_gap" in source
+
     from rfsensing import train
 
     for api in (
@@ -98,5 +101,6 @@ def test_readme_documents_open_set_reid():
         "RepeatedReIDResult",
         "ReIDModule",
         "batch_hard_triplet_loss",
+        "supcon_loss",
     ):
         assert hasattr(train, api)

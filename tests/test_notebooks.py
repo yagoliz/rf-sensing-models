@@ -36,3 +36,5 @@ def test_open_set_reid_notebook_source_contract():
     assert "top_score" in source  # known/unknown score distribution plot
     assert "smoke test" in source
     assert "WhoFi" in source
+    assert 'objective="supcon"' in source
+    assert 'detection_score="top_gap"' in source

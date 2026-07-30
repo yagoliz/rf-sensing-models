@@ -23,7 +23,7 @@ repository focuses on datasets, models, training, and evaluation.
 | Datasets | UT_HAR, NTU-Fi HAR, NTU-Fi HumanID (closed-set and identity-disjoint Re-ID views), Widar, WiMANS, and generated synthetic data |
 | Models | MLP, LeNet, LSTM/BiLSTM, ResNet-18, and ViT |
 | Representations | Dataset-provided CSI amplitude and Widar BVP tensors; configurable WiMANS temporal pooling and normalization |
-| Evaluation | Accuracy, rank-k accuracy, confusion matrices, count MAE, ±1-person accuracy, rounded regression accuracy, and gallery–probe retrieval/rejection metrics |
+| Evaluation | Accuracy, rank-k accuracy, confusion matrices, count MAE, ±1-person accuracy, rounded regression accuracy, and gallery-probe retrieval/rejection metrics |
 | Training | Task-aware Lightning modules, joint classification + batch-hard triplet Re-ID training, best-checkpoint restoration, TensorBoard logging, and model embeddings |
 
 All DataModules and models share registry-based interfaces, so experiments are
@@ -75,7 +75,7 @@ best checkpoint by validation accuracy.
 
 WiMANS supports two views of group size:
 
-- ordered classification over counts 0–5; and
+- ordered classification over counts 0-5; and
 - scalar regression with raw MAE.
 
 ```python
@@ -140,10 +140,18 @@ their top gallery score falls below a threshold.
 
 Training draws identity-balanced P×K batches (P identities × K samples) and
 optimizes a joint objective: cross-entropy over the training identities plus a
-batch-hard triplet loss on L2-normalized embeddings. The best checkpoint is
-selected by validation mAP. Both rejection thresholds — the validation EER
-point and the strictest threshold with validation FAR ≤ 5% — are calibrated
-on validation scores only and applied unchanged to the test probes.
+metric-learning term on L2-normalized embeddings — a batch-hard triplet loss
+by default, or a supervised contrastive loss via `objective="supcon"` (the
+contrastive log-sum-exp keeps pushing all negatives apart, spreading
+identities over the hypersphere so cosine scores do not saturate near 1.0).
+The best checkpoint is selected by validation mAP. Both rejection thresholds
+— the validation EER point and the strictest threshold with validation
+FAR ≤ 5% — are calibrated on validation scores only and applied unchanged to
+the test probes. Rejection can threshold either the absolute top cosine score
+(default) or, with `detection_score="top_gap"`, the top-1 minus top-2
+identity score, which is robust to per-subject score shifts: a probe that is
+close to several enrolled identities at once has a high top score but a
+near-zero gap.
 
 ```python
 from pathlib import Path
@@ -276,8 +284,8 @@ sensing goals:
 - **WhoFi reproduction:** a faithful WhoFi architecture and
   published-protocol reproduction remains explicit future work; the current
   ViT Re-ID baseline is a generic Transformer, not a WhoFi implementation.
-- **Richer Re-ID objectives:** ArcFace and supervised contrastive losses on
-  top of the existing joint cross-entropy + triplet training.
+- **Richer Re-ID objectives:** ArcFace margin-softmax on top of the existing
+  triplet and supervised contrastive options.
 - **Robustness protocols:** leave-one-day-out and leave-one-room-out splits
   instead of relying only on fixed or random splits.
 - **Temporal gait models:** CNN+GRU and temporal Transformer baselines for

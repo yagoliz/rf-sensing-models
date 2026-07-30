@@ -178,11 +178,16 @@ def score_histogram(prefix="reid"):
         print(f"no predictions saved under {prefix}-*; run training first")
         return
     predictions = pd.concat(pd.read_csv(p) for p in prediction_files)
+    # Newer runs record the score actually thresholded (top_score or gap);
+    # fall back to top_score for CSVs from before that column existed.
+    column = (
+        "detection_score" if "detection_score" in predictions else "top_score"
+    )
     fig, ax = plt.subplots(figsize=(7, 4))
     for flag, label in ((True, "known probes"), (False, "unknown probes")):
         subset = predictions[predictions["known"] == flag]
-        ax.hist(subset["top_score"], bins=30, alpha=0.6, label=label)
-    ax.set(xlabel="top gallery cosine score", ylabel="probes")
+        ax.hist(subset[column], bins=30, alpha=0.6, label=label)
+    ax.set(xlabel=f"detection score ({column})", ylabel="probes")
     ax.legend(frameon=False)
 
 
@@ -239,6 +244,61 @@ aggregate_table(OPEN_SET, prefix="extended-reid")
 
 # %%
 score_histogram("extended-reid")
+
+# %% [markdown]
+# ## Variant: SupCon objective + top-gap detection score
+#
+# Two options aimed at the failure modes of absolute-score thresholding:
+#
+# - `objective="supcon"` replaces the batch-hard triplet term with a
+#   supervised contrastive loss whose log-sum-exp keeps pushing all
+#   negatives apart, spreading identities over the hypersphere instead of
+#   stopping at a fixed margin — cosine scores stop saturating near 1.0.
+# - `detection_score="top_gap"` rejects on the top-1 minus top-2 identity
+#   score instead of the absolute top cosine. A probe equidistant from two
+#   enrolled identities has a high top score but a near-zero gap, so gap
+#   thresholds are robust to per-subject score shifts.
+#
+# Both are independent switches; this cell runs them together on the same
+# seeds as the extended benchmark for a paired comparison.
+
+# %%
+RUN_VARIANT = False
+
+if RUN_VARIANT:
+    variant = {}
+    for encoder, kwargs in ENCODERS.items():
+        variant[encoder] = run_reid_repeats(
+            lambda dm: models.build(
+                encoder,
+                in_shape=dm.sample_shape,
+                num_classes=dm.output_dim,
+                **kwargs,
+            ),
+            make_dm,
+            seeds=EXTENDED_SEEDS,
+            max_epochs=EXTENDED_EPOCHS,
+            name=f"supcon-gap-reid-{encoder}",
+            runs_dir=RUNS_DIR,
+            objective="supcon",
+            detection_score="top_gap",
+        )
+
+# %%
+aggregate_table(RETRIEVAL, prefix="supcon-gap-reid")
+
+# %%
+aggregate_table(OPEN_SET, prefix="supcon-gap-reid")
+
+# %%
+score_histogram("supcon-gap-reid")
+
+# %% [markdown]
+# Judge the variant against `extended-reid` per seed, not only on the means:
+# the interesting questions are whether the reject-all rotations (calibrated
+# thresholds near 1.0) recover DIR, and whether the confusable-unknown
+# rotation improves at all — if that subject genuinely resembles an enrolled
+# one, no objective can separate them and only more training identities help.
 
 # %% [markdown]
 # ## Caveats
