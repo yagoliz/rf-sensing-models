@@ -72,8 +72,10 @@ def supcon_loss(
         raise ValueError("every anchor needs at least one negative in the batch")
     similarities = (z @ z.T / temperature).masked_fill(eye, -torch.inf)
     log_prob = similarities - similarities.logsumexp(dim=1, keepdim=True)
+    # masked_fill, not multiply: the -inf diagonal times a 0 mask would be NaN.
     mean_log_prob_positive = (
-        (log_prob * positive_mask).sum(dim=1) / positive_mask.sum(dim=1)
+        log_prob.masked_fill(~positive_mask, 0.0).sum(dim=1)
+        / positive_mask.sum(dim=1)
     )
     return -mean_log_prob_positive.mean()
 
