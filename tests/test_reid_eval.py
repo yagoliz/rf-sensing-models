@@ -303,3 +303,25 @@ def test_reid_scores_is_frozen():
     assert isinstance(scores, ReIDScores)
     with pytest.raises(AttributeError):
         scores.top_scores = torch.zeros(1)
+
+
+@pytest.mark.skipif(
+    not torch.backends.mps.is_available(), reason="MPS not available"
+)
+def test_eval_pipeline_accepts_non_cpu_embeddings():
+    generator = torch.Generator().manual_seed(0)
+    gallery = torch.randn(8, 4, generator=generator).to("mps")
+    gallery_labels = torch.tensor([0, 0, 1, 1, 2, 2, 3, 3])
+    probes = torch.randn(10, 4, generator=generator).to("mps")
+    probe_labels = torch.tensor([0, 1, 2, 3, 0, 1, 2, 3, 9, 9])
+    known = torch.tensor([True] * 8 + [False] * 2)
+    scores = score_gallery_probe(gallery, gallery_labels, probes)
+    retrieval = retrieval_metrics(scores, probe_labels, known, ranks=(1, 3))
+    assert 0.0 <= retrieval["mAP"] <= 1.0
+    detection = detection_metrics(scores.top_scores, known)
+    assert 0.0 <= detection["auroc"] <= 1.0
+    thresholds = calibrate_thresholds(scores.top_scores, known)
+    open_set = open_set_metrics(
+        scores, probe_labels, known, thresholds["eer_threshold"]
+    )
+    assert 0.0 <= open_set["dir"] <= 1.0

@@ -210,6 +210,11 @@ checkpoint, per-probe scores and thresholded predictions
 `runs/ntu_fi_humanid_reid/<name>/aggregate_summary.json`. A single repeat is
 available as `rfsensing.train.run_reid`.
 
+Training device selection follows Lightning's `accelerator` argument
+(`"auto"` by default, so CUDA/MPS is used when available). Post-training
+embedding extraction runs on the same device; pass `device=` to `run_reid`
+or `run_reid_repeats` to override it (e.g. `device="cpu"`).
+
 ## Datasets
 
 | Registry name | Task | Sample shape | Classes/output | Default protocol |

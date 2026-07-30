@@ -63,7 +63,9 @@ def score_gallery_probe(
     """Cosine-score every probe against the gallery, aggregated per identity."""
     gallery = _check_embeddings(gallery_embeddings, "gallery")
     probes = _check_embeddings(probe_embeddings, "probe")
-    gallery_labels = torch.as_tensor(gallery_labels).long().reshape(-1)
+    gallery_labels = (
+        torch.as_tensor(gallery_labels).long().reshape(-1).to(gallery.device)
+    )
     if gallery_labels.numel() != gallery.shape[0]:
         raise ValueError(
             f"gallery labels count {gallery_labels.numel()} does not match "
@@ -107,13 +109,14 @@ def _known_probe_labels(
     *,
     require_unknown: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    probe_labels = torch.as_tensor(probe_labels).long().reshape(-1)
+    device = scores.sample_scores.device
+    probe_labels = torch.as_tensor(probe_labels).long().reshape(-1).to(device)
     if probe_labels.numel() != scores.sample_scores.shape[0]:
         raise ValueError(
             f"probe labels count {probe_labels.numel()} does not match "
             f"{scores.sample_scores.shape[0]} probes"
         )
-    known_mask = torch.as_tensor(known_mask).bool().reshape(-1)
+    known_mask = torch.as_tensor(known_mask).bool().reshape(-1).to(device)
     if known_mask.numel() != probe_labels.numel():
         raise ValueError("known mask length must match probe labels")
     if not known_mask.any():
@@ -165,7 +168,7 @@ def retrieval_metrics(
         scores.gallery_labels[order] == labels.unsqueeze(1)
     ).float()
     positions = torch.arange(
-        1, relevant.shape[1] + 1, dtype=torch.float32
+        1, relevant.shape[1] + 1, dtype=torch.float32, device=relevant.device
     ).unsqueeze(0)
     precision = relevant.cumsum(dim=1) / positions
     average_precision = (precision * relevant).sum(dim=1) / relevant.sum(dim=1)
@@ -177,7 +180,9 @@ def _roc(top_scores: torch.Tensor, known_mask: torch.Tensor):
     from sklearn.metrics import roc_curve
 
     fpr, tpr, thresholds = roc_curve(
-        known_mask.numpy(), top_scores.numpy(), drop_intermediate=False
+        known_mask.cpu().numpy(),
+        top_scores.cpu().numpy(),
+        drop_intermediate=False,
     )
     return fpr, tpr, thresholds
 
@@ -189,12 +194,16 @@ def detection_metrics(
     from sklearn.metrics import roc_auc_score
 
     top_scores = _check_scores(top_scores, "top scores")
-    known_mask = _check_known_mask(known_mask, top_scores.numel())
+    known_mask = _check_known_mask(known_mask, top_scores.numel()).to(
+        top_scores.device
+    )
     fpr, tpr, _ = _roc(top_scores, known_mask)
     fnr = 1.0 - tpr
     eer_index = int(abs(fpr - fnr).argmin())  # first minimum: deterministic
     return {
-        "auroc": float(roc_auc_score(known_mask.numpy(), top_scores.numpy())),
+        "auroc": float(
+            roc_auc_score(known_mask.cpu().numpy(), top_scores.cpu().numpy())
+        ),
         "eer": float((fpr[eer_index] + fnr[eer_index]) / 2.0),
     }
 
@@ -214,7 +223,9 @@ def calibrate_thresholds(
     if not 0.0 < far_target < 1.0:
         raise ValueError(f"far_target must be in (0, 1), got {far_target}")
     top_scores = _check_scores(top_scores, "top scores")
-    known_mask = _check_known_mask(known_mask, top_scores.numel())
+    known_mask = _check_known_mask(known_mask, top_scores.numel()).to(
+        top_scores.device
+    )
     fpr, tpr, thresholds = _roc(top_scores, known_mask)
     fnr = 1.0 - tpr
     eer_index = int(abs(fpr - fnr).argmin())

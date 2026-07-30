@@ -237,3 +237,29 @@ def test_vit_one_step_contract_on_generated_ntu(fake_ntu_root, monkeypatch):
     module.validation_step(next(iter(probes)), 0, 1)
     module.on_validation_epoch_end()
     assert {"val/mAP", "val/rank1", "val/rank3"} <= logged.keys()
+
+
+needs_mps = pytest.mark.skipif(
+    not torch.backends.mps.is_available(), reason="MPS not available"
+)
+
+
+@needs_mps
+def test_module_validation_works_on_mps(monkeypatch):
+    net = _net().to("mps")
+    module = ReIDModule(net, num_train_identities=4)
+    logged = _logged(module, monkeypatch)
+    gallery = (
+        torch.randn(4, *IN_SHAPE, device="mps"),
+        torch.tensor([3, 3, 7, 7], device="mps"),
+    )
+    probes = (
+        torch.randn(4, *IN_SHAPE, device="mps"),
+        torch.tensor([3, 7, 3, 7], device="mps"),
+    )
+    module.validation_step(gallery, 0, 0)
+    # Buffers must be device-agnostic so epoch-end metrics never mix devices.
+    assert module._val_embeddings[0][0].device.type == "cpu"
+    module.validation_step(probes, 0, 1)
+    module.on_validation_epoch_end()
+    assert {"val/mAP", "val/rank1", "val/rank3"} <= logged.keys()

@@ -106,8 +106,10 @@ class ReIDModule(_SupervisedModule):
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         x, y = batch
         z = F.normalize(self.net.embed(x), dim=1)
-        self._val_embeddings[dataloader_idx].append(z)
-        self._val_labels[dataloader_idx].append(y)
+        # Buffer on CPU so epoch-end scoring never mixes accelerator and CPU
+        # tensors (and embeddings don't accumulate on the accelerator).
+        self._val_embeddings[dataloader_idx].append(z.detach().cpu())
+        self._val_labels[dataloader_idx].append(y.detach().cpu())
 
     def _clear_validation_buffers(self):
         for store in (self._val_embeddings, self._val_labels):

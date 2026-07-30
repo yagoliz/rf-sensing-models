@@ -50,14 +50,26 @@ def _save_json(path: Path, payload: dict) -> Path:
 
 
 @torch.no_grad()
-def _embed_loader(net: nn.Module, loader) -> tuple[torch.Tensor, torch.Tensor]:
-    """Collect raw ``net.embed`` features, restoring the prior train mode."""
+def _embed_loader(
+    net: nn.Module, loader, device: str | torch.device | None = None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Collect raw ``net.embed`` features on ``device``, returned on CPU.
+
+    ``device`` defaults to the network's current device. The network's prior
+    training mode is restored afterwards.
+    """
+    device = (
+        torch.device(device)
+        if device is not None
+        else next(net.parameters()).device
+    )
+    net.to(device)
     was_training = net.training
     net.eval()
     embeddings, labels = [], []
     for x, y in loader:
-        embeddings.append(net.embed(x))
-        labels.append(y)
+        embeddings.append(net.embed(x.to(device)).cpu())
+        labels.append(y.cpu())
     if was_training:
         net.train()
     embeddings = torch.cat(embeddings)
@@ -109,11 +121,11 @@ def _write_predictions(path: Path, rows: list[dict]) -> Path:
 
 
 def _score_roles(
-    net: nn.Module, loaders: dict
+    net: nn.Module, loaders: dict, device: torch.device | None = None
 ) -> tuple[ReIDScores, torch.Tensor, torch.Tensor]:
-    gallery_z, gallery_y = _embed_loader(net, loaders["gallery"])
-    known_z, known_y = _embed_loader(net, loaders["known_probes"])
-    unknown_z, unknown_y = _embed_loader(net, loaders["unknown_probes"])
+    gallery_z, gallery_y = _embed_loader(net, loaders["gallery"], device)
+    known_z, known_y = _embed_loader(net, loaders["known_probes"], device)
+    unknown_z, unknown_y = _embed_loader(net, loaders["unknown_probes"], device)
     scores = score_gallery_probe(
         gallery_z, gallery_y, torch.cat([known_z, unknown_z])
     )
@@ -137,9 +149,15 @@ def run_reid(
     triplet_weight: float = 1.0,
     far_target: float = 0.05,
     accelerator: str = "auto",
+    device: str | torch.device | None = None,
     runs_dir: str | Path = "runs",
 ) -> ReIDResult:
-    """Train one Re-ID repeat and evaluate open-set metrics on the test roles."""
+    """Train one Re-ID repeat and evaluate open-set metrics on the test roles.
+
+    ``accelerator`` selects the training device (Lightning semantics);
+    ``device`` selects where post-training embedding extraction runs and
+    defaults to the device the trainer used.
+    """
     manifest_seed = dm.split_manifest.seed
     if seed != manifest_seed:
         raise ValueError(
@@ -175,19 +193,25 @@ def run_reid(
     net.load_state_dict(
         {k.removeprefix("net."): v for k, v in state.items() if k.startswith("net.")}
     )
-    net.cpu()
+    eval_device = (
+        torch.device(device) if device is not None
+        else trainer.strategy.root_device
+    )
+    net.to(eval_device)
 
     log_dir = Path(trainer.log_dir)
     far_point = f"far{round(far_target * 100):02d}_threshold"
 
     # Thresholds come from validation scores only; test labels never enter.
-    val_scores, _, val_known = _score_roles(net, dm.validation_loaders_by_role())
+    val_scores, _, val_known = _score_roles(
+        net, dm.validation_loaders_by_role(), eval_device
+    )
     thresholds = calibrate_thresholds(
         val_scores.top_scores, val_known, far_target=far_target
     )
 
     test_scores, test_labels, test_known = _score_roles(
-        net, dm.test_loaders_by_role()
+        net, dm.test_loaders_by_role(), eval_device
     )
     num_identities = test_scores.identity_labels.numel()
     capped = min(3, num_identities)

@@ -453,3 +453,56 @@ def test_run_reid_end_to_end_generated_ntu(fake_ntu_root, tmp_path):
     for key in ("test/mAP", "test/auroc", "test/eer_threshold/dir"):
         assert key in result.metrics
         assert 0.0 <= result.metrics[key] <= 1.0
+
+
+# --- device handling ---
+
+
+def test_embed_loader_accepts_device():
+    dm = _TinyReIDDataModule()
+    dm.setup()
+    net = _tiny_net(dm)
+    loader = dm.test_loaders_by_role()["gallery"]
+    embeddings, labels = _embed_loader(net, loader, device="cpu")
+    assert embeddings.device.type == "cpu"
+    assert labels.device.type == "cpu"
+
+
+@pytest.mark.skipif(
+    not torch.backends.mps.is_available(), reason="MPS not available"
+)
+def test_run_reid_on_mps(tmp_path):
+    dm = _TinyReIDDataModule(split_seed=42)
+    net = _tiny_net(dm)
+    result = run_reid(
+        net,
+        dm,
+        max_epochs=1,
+        name="mps-smoke",
+        seed=42,
+        accelerator="mps",
+        runs_dir=tmp_path,
+    )
+    assert "test/mAP" in result.metrics
+    assert result.summary_path.exists()
+
+
+@pytest.mark.skipif(
+    not torch.backends.mps.is_available(), reason="MPS not available"
+)
+def test_run_reid_device_override(tmp_path):
+    dm = _TinyReIDDataModule(split_seed=42)
+    net = _tiny_net(dm)
+    result = run_reid(
+        net,
+        dm,
+        max_epochs=1,
+        name="device-override",
+        seed=42,
+        accelerator="mps",
+        device="cpu",
+        runs_dir=tmp_path,
+    )
+    assert "test/mAP" in result.metrics
+    # Evaluation ran on the requested device: the net ends up there.
+    assert next(net.parameters()).device.type == "cpu"
