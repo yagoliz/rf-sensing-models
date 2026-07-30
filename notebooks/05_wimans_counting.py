@@ -1,7 +1,7 @@
 # %% [markdown]
 # # WiMANS people counting
 #
-# WiMANS contains 0–5 simultaneous users recorded across three rooms and two
+# WiMANS contains 0-5 simultaneous users recorded across three rooms and two
 # Wi-Fi bands. This notebook compares ordered group-size classification with
 # scalar count regression using group-held-out splits. It directly targets the
 # group-size MAE and ±1-person metrics in `MAIN_PROJECT.md`.
