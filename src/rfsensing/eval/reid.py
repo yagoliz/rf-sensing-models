@@ -21,6 +21,7 @@ class ReIDScores:
     ranked_identities: torch.Tensor   # descending score, ties -> ascending id
     top_scores: torch.Tensor
     top_identities: torch.Tensor
+    top_gaps: torch.Tensor            # top-1 minus top-2 identity score
 
 
 def _check_embeddings(embeddings: torch.Tensor, what: str) -> torch.Tensor:
@@ -91,14 +92,23 @@ def score_gallery_probe(
     # the lowest stable identity ID.
     order = torch.argsort(identity_scores, dim=1, descending=True, stable=True)
     ranked_identities = identity_labels[order]
+    top_scores = identity_scores.amax(dim=1)
+    if identity_labels.numel() > 1:
+        sorted_scores = identity_scores.sort(dim=1, descending=True).values
+        # A relative detection score: large when one enrolled identity
+        # clearly wins, near zero when the probe is equidistant from several.
+        top_gaps = sorted_scores[:, 0] - sorted_scores[:, 1]
+    else:
+        top_gaps = top_scores.clone()  # no runner-up exists
     return ReIDScores(
         gallery_labels=gallery_labels,
         identity_labels=identity_labels,
         sample_scores=sample_scores,
         identity_scores=identity_scores,
         ranked_identities=ranked_identities,
-        top_scores=identity_scores.amax(dim=1),
+        top_scores=top_scores,
         top_identities=ranked_identities[:, 0],
+        top_gaps=top_gaps,
     )
 
 
@@ -265,16 +275,30 @@ def open_set_metrics(
     probe_labels: torch.Tensor,
     known_mask: torch.Tensor,
     threshold: float,
+    *,
+    detection_scores: torch.Tensor | None = None,
 ) -> dict[str, float]:
     """Acceptance/rejection metrics at a fixed operating threshold.
 
     DIR counts a known probe only when it is accepted *and* its top-ranked
     identity is correct, so rejecting everything cannot look successful.
+    ``detection_scores`` overrides the acceptance score per probe (default:
+    ``scores.top_scores``); e.g. pass ``scores.top_gaps`` for gap-based
+    rejection. The predicted identity is always the top-ranked one.
     """
     probe_labels, known_mask = _known_probe_labels(
         scores, probe_labels, known_mask, require_unknown=True
     )
-    accepted = scores.top_scores >= threshold
+    if detection_scores is None:
+        detection_scores = scores.top_scores
+    else:
+        detection_scores = _check_scores(detection_scores, "detection scores")
+        if detection_scores.numel() != probe_labels.numel():
+            raise ValueError(
+                f"detection scores count {detection_scores.numel()} does not "
+                f"match {probe_labels.numel()} probes"
+            )
+    accepted = detection_scores.to(probe_labels.device) >= threshold
     correct = scores.top_identities == probe_labels
     known_accepted = accepted[known_mask]
     far = accepted[~known_mask].float().mean().item()

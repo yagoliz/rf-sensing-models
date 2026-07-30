@@ -325,3 +325,52 @@ def test_eval_pipeline_accepts_non_cpu_embeddings():
         scores, probe_labels, known, thresholds["eer_threshold"]
     )
     assert 0.0 <= open_set["dir"] <= 1.0
+
+
+# --- top-gap detection scores ---
+
+
+def test_scoring_top_gaps():
+    scores = _scores(
+        [[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]], [0, 1, 1], [[1.0, 0.0]]
+    )
+    # identity scores [1.0, sqrt(0.5)] -> gap = 1 - sqrt(0.5)
+    assert scores.top_gaps[0].item() == pytest.approx(
+        1.0 - math.sqrt(0.5), abs=1e-6
+    )
+
+
+def test_scoring_top_gaps_single_identity_falls_back_to_top_score():
+    scores = _scores([[1.0, 0.0]], [0], [[0.6, 0.8]])
+    assert torch.allclose(scores.top_gaps, scores.top_scores)
+
+
+def test_open_set_metrics_with_gap_detection_scores():
+    scores, probe_labels, known = _open_set_fixture()
+    # Unknown probe [0.707, 0.707] ties both identities: top score ~0.707
+    # but gap ~0. A top-score threshold of 0.7 accepts it; a gap threshold
+    # of 0.15 rejects it while keeping all known probes.
+    top_based = open_set_metrics(scores, probe_labels, known, threshold=0.7)
+    assert top_based["far"] == pytest.approx(1.0)
+    gap_based = open_set_metrics(
+        scores,
+        probe_labels,
+        known,
+        threshold=0.15,
+        detection_scores=scores.top_gaps,
+    )
+    assert gap_based["far"] == pytest.approx(0.0)
+    assert gap_based["known_acceptance"] == pytest.approx(1.0)
+    assert gap_based["dir"] == pytest.approx(2.0 / 3.0)
+
+
+def test_open_set_metrics_rejects_bad_detection_scores():
+    scores, probe_labels, known = _open_set_fixture()
+    with pytest.raises(ValueError, match="detection"):
+        open_set_metrics(
+            scores,
+            probe_labels,
+            known,
+            threshold=0.5,
+            detection_scores=torch.tensor([0.5, 0.6]),
+        )
