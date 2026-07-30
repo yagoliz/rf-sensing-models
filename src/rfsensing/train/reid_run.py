@@ -7,8 +7,10 @@ manifest, best checkpoint, per-probe predictions, and a JSON summary.
 
 import csv
 import json
+import statistics
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, Sequence
 
 import lightning as L
 import torch
@@ -256,5 +258,89 @@ def run_reid(
         log_dir=log_dir,
         manifest_path=manifest_path,
         predictions_path=predictions_path,
+        summary_path=summary_path,
+    )
+
+
+@dataclass
+class RepeatedReIDResult:
+    repeats: list[ReIDResult]
+    aggregate_metrics: dict[str, dict[str, float]]
+    summary_path: Path
+
+
+def run_reid_repeats(
+    net_factory: Callable[[CSIDataModule], nn.Module],
+    datamodule_factory: Callable[[int], CSIDataModule],
+    *,
+    seeds: Sequence[int],
+    max_epochs: int = 50,
+    name: str | None = None,
+    runs_dir: str | Path = "runs",
+    **run_kwargs,
+) -> RepeatedReIDResult:
+    """Run one Re-ID repeat per seed and aggregate mean ± sample std.
+
+    Each repeat gets a fresh DataModule (split by its seed) and a fresh
+    network. Failures propagate immediately with seed context; failed repeats
+    are never silently omitted.
+    """
+    if not seeds:
+        raise ValueError("seeds must contain at least one seed")
+    repeats: list[ReIDResult] = []
+    experiment = name
+    dataset_name = None
+    for seed in seeds:
+        try:
+            dm = datamodule_factory(seed)
+            net = net_factory(dm)
+            if experiment is None:
+                experiment = type(net).__name__.lower()
+            dataset_name = dm.name
+            result = run_reid(
+                net,
+                dm,
+                max_epochs=max_epochs,
+                name=f"{experiment}/seed{seed}",
+                seed=seed,
+                runs_dir=runs_dir,
+                **run_kwargs,
+            )
+        except Exception as error:
+            raise RuntimeError(
+                f"reid repeat for seed {seed} failed: {error}"
+            ) from error
+        repeats.append(result)
+    aggregate_metrics = {
+        key: {
+            "mean": statistics.fmean(values),
+            "std": statistics.stdev(values) if len(values) > 1 else 0.0,
+        }
+        for key in repeats[0].metrics
+        for values in [[r.metrics[key] for r in repeats]]
+    }
+    parent = Path(runs_dir) / dataset_name / experiment
+    parent.mkdir(parents=True, exist_ok=True)
+    summary_path = _save_json(
+        parent / "aggregate_summary.json",
+        {
+            "seeds": list(seeds),
+            "metrics": aggregate_metrics,
+            "repeats": [
+                {
+                    "seed": seed,
+                    "log_dir": str(result.log_dir),
+                    "checkpoint": str(result.checkpoint_path),
+                    "manifest": str(result.manifest_path),
+                    "predictions": str(result.predictions_path),
+                    "summary": str(result.summary_path),
+                }
+                for seed, result in zip(seeds, repeats)
+            ],
+        },
+    )
+    return RepeatedReIDResult(
+        repeats=repeats,
+        aggregate_metrics=aggregate_metrics,
         summary_path=summary_path,
     )

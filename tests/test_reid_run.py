@@ -1,5 +1,6 @@
 import csv
 import json
+from pathlib import Path
 
 import pytest
 import torch
@@ -15,6 +16,7 @@ from rfsensing.train.reid_run import (
     _predictions_rows,
     _save_json,
     run_reid,
+    run_reid_repeats,
 )
 
 
@@ -291,3 +293,113 @@ def test_run_reid_thresholds_come_from_validation(reid_result):
     assert result.thresholds["far_threshold"] == pytest.approx(
         recomputed["far_threshold"]
     )
+
+
+# --- run_reid_repeats ---
+
+
+def _run_repeats(tmp_path, seeds, **kwargs):
+    calls = {"net": 0, "dm": 0}
+    nets = []
+
+    def dm_factory(seed):
+        calls["dm"] += 1
+        return _TinyReIDDataModule(split_seed=seed)
+
+    def net_factory(dm):
+        calls["net"] += 1
+        net = _tiny_net(dm)
+        nets.append(net)
+        return net
+
+    result = run_reid_repeats(
+        net_factory,
+        dm_factory,
+        seeds=seeds,
+        max_epochs=1,
+        name="repeat-smoke",
+        accelerator="cpu",
+        runs_dir=tmp_path,
+        **kwargs,
+    )
+    return result, calls, nets
+
+
+@pytest.fixture(scope="module")
+def repeats_result(tmp_path_factory):
+    return _run_repeats(tmp_path_factory.mktemp("reid_repeats"), seeds=(42, 43))
+
+
+def test_repeats_call_factories_once_per_seed(repeats_result):
+    result, calls, nets = repeats_result
+    assert calls == {"net": 2, "dm": 2}
+    assert len({id(net) for net in nets}) == 2
+    assert len(result.repeats) == 2
+
+
+def test_repeats_manifests_match_seeds(repeats_result):
+    result, _, _ = repeats_result
+    names = [f"s{i:02d}" for i in range(1, 15)]
+    for seed, repeat in zip((42, 43), result.repeats):
+        manifest = json.loads(repeat.manifest_path.read_text())
+        expected = make_identity_split(names, seed=seed)
+        assert manifest["seed"] == seed
+        assert manifest["train"] == list(expected.train)
+
+
+def test_repeats_aggregate_mean_and_sample_std(repeats_result):
+    import statistics
+
+    result, _, _ = repeats_result
+    for key, stats in result.aggregate_metrics.items():
+        values = [r.metrics[key] for r in result.repeats]
+        assert stats["mean"] == pytest.approx(statistics.fmean(values))
+        assert stats["std"] == pytest.approx(statistics.stdev(values))
+
+
+def test_repeats_single_seed_std_is_zero(tmp_path):
+    result, _, _ = _run_repeats(tmp_path, seeds=(42,))
+    for stats in result.aggregate_metrics.values():
+        assert stats["std"] == 0.0
+
+
+def test_repeats_summary_lists_artifacts(repeats_result):
+    result, _, _ = repeats_result
+    summary = json.loads(result.summary_path.read_text())
+    assert summary["seeds"] == [42, 43]
+    assert len(summary["repeats"]) == 2
+    for seed, entry in zip((42, 43), summary["repeats"]):
+        assert entry["seed"] == seed
+        assert Path(entry["summary"]).exists()
+        assert Path(entry["checkpoint"]).exists()
+    # aggregate JSON parses with allow_nan-style strictness: reparse strictly
+    strict = json.loads(
+        result.summary_path.read_text(),
+        parse_constant=lambda c: pytest.fail(f"non-finite value {c}"),
+    )
+    assert strict["metrics"].keys() == result.aggregate_metrics.keys()
+
+
+def test_repeats_failure_carries_seed_context(tmp_path):
+    def bad_dm_factory(seed):
+        if seed == 43:
+            raise RuntimeError("boom")
+        return _TinyReIDDataModule(split_seed=seed)
+
+    with pytest.raises(RuntimeError, match="43"):
+        run_reid_repeats(
+            _tiny_net,
+            bad_dm_factory,
+            seeds=(42, 43),
+            max_epochs=1,
+            name="fail",
+            accelerator="cpu",
+            runs_dir=tmp_path,
+        )
+
+
+def test_repeats_require_seeds(tmp_path):
+    with pytest.raises(ValueError, match="seeds"):
+        run_reid_repeats(
+            _tiny_net, _TinyReIDDataModule, seeds=(), runs_dir=tmp_path
+        )
