@@ -38,3 +38,7 @@ def test_open_set_reid_notebook_source_contract():
     assert "WhoFi" in source
     assert 'objective="supcon"' in source
     assert 'detection_score="top_gap"' in source
+    # Embedding-space comparison: 2-D projection + cosine histograms.
+    assert "project(" in source
+    assert "tsne" in source
+    assert "intra" in source and "inter" in source

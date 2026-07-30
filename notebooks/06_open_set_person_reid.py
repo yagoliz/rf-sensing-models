@@ -301,6 +301,146 @@ score_histogram("supcon-gap-reid")
 # one, no objective can separate them and only more training identities help.
 
 # %% [markdown]
+# ## Embedding space per individual: triplet vs. SupCon
+#
+# Two paired views of one seed's **test** roles, computed from the saved best
+# checkpoints of both objectives (no retraining):
+#
+# 1. a 2-D t-SNE projection colored by subject, with gallery samples, known
+#    probes, and unknown probes drawn as distinct markers — cluster overlap
+#    with the unknown subject is the "confusable rotation" failure made
+#    visible, and gallery/probe drift within one color shows session shift;
+# 2. intra- vs. inter-identity cosine similarity histograms — the faithful
+#    view of the *spread* claim. t-SNE exaggerates cluster separation and
+#    discards absolute distances, so panels can look alike even when the
+#    score geometry differs; the histograms show the quantity thresholds
+#    actually operate on. Expect SupCon to shift the inter-identity mass
+#    away from 1.0 and widen the gap between the two distributions.
+#
+# Set `VIZ_SEED` to the confusable rotation (test-unknown subject scoring
+# like an enrolled one) to see failure mode 1 directly.
+
+# %%
+import numpy as np
+import torch
+import torch.nn.functional as F
+
+from rfsensing.eval.embeddings import project
+
+VIZ_SEED = EXTENDED_SEEDS[0]
+VIZ_ENCODER = "resnet18"
+OBJECTIVE_RUNS = {"triplet": "extended-reid", "supcon": "supcon-gap-reid"}
+
+
+def load_run_net(prefix, encoder, seed):
+    run_root = (
+        RUNS_DIR / "ntu_fi_humanid_reid" / f"{prefix}-{encoder}" / f"seed{seed}"
+    )
+    summaries = sorted(run_root.glob("version_*/summary.json"))
+    if not summaries:
+        print(f"no saved run under {run_root}; train that variant first")
+        return None
+    summary = json.loads(summaries[-1].read_text())
+    net = models.build(
+        encoder,
+        in_shape=viz_dm.sample_shape,
+        num_classes=viz_dm.output_dim,
+        **ENCODERS[encoder],
+    )
+    state = torch.load(
+        summary["checkpoint"], map_location="cpu", weights_only=True
+    )["state_dict"]
+    net.load_state_dict(
+        {k.removeprefix("net."): v for k, v in state.items() if k.startswith("net.")}
+    )
+    return net.eval()
+
+
+@torch.no_grad()
+def embed_test_roles(net, dm):
+    roles = {}
+    for role, loader in dm.test_loaders_by_role().items():
+        zs, ys = [], []
+        for x, y in loader:
+            zs.append(F.normalize(net.embed(x), dim=1))
+            ys.append(y)
+        roles[role] = (torch.cat(zs).numpy(), torch.cat(ys).numpy())
+    return roles
+
+
+viz_dm = make_dm(VIZ_SEED)
+viz_dm.setup()
+embedded = {}
+for objective, prefix in OBJECTIVE_RUNS.items():
+    net = load_run_net(prefix, VIZ_ENCODER, VIZ_SEED)
+    if net is not None:
+        embedded[objective] = embed_test_roles(net, viz_dm)
+
+# %%
+ROLE_MARKERS = {"gallery": "o", "known_probes": "^", "unknown_probes": "x"}
+
+if embedded:
+    fig, axes = plt.subplots(
+        1, len(embedded), figsize=(6 * len(embedded), 5), squeeze=False
+    )
+    for ax, (objective, roles) in zip(axes[0], embedded.items()):
+        z_all = np.concatenate([z for z, _ in roles.values()])
+        z2d = project(z_all, method="tsne", seed=VIZ_SEED)
+        subjects = sorted(
+            {int(s) for _, y in roles.values() for s in np.unique(y)}
+        )
+        colors = {s: plt.get_cmap("tab10")(i) for i, s in enumerate(subjects)}
+        offset = 0
+        for role, (z, y) in roles.items():
+            block = z2d[offset : offset + len(z)]
+            offset += len(z)
+            for subject in np.unique(y):
+                mask = y == subject
+                unknown = role == "unknown_probes"
+                ax.scatter(
+                    block[mask, 0],
+                    block[mask, 1],
+                    marker=ROLE_MARKERS[role],
+                    s=60 if unknown else 30,
+                    color=colors[int(subject)],
+                    linewidths=1.5 if unknown else 0.5,
+                    label=(
+                        f"{viz_dm.identity_names[int(subject)]}"
+                        f" ({role.replace('_', ' ')})"
+                    ),
+                )
+        ax.set(title=f"{VIZ_ENCODER}, {objective}, seed {VIZ_SEED}")
+        ax.set_xticks([])  # t-SNE axes are unitless
+        ax.set_yticks([])
+        ax.legend(fontsize=7, frameon=False, loc="best")
+    fig.tight_layout()
+
+# %%
+if embedded:
+    fig, axes = plt.subplots(
+        1, len(embedded), figsize=(6 * len(embedded), 4),
+        squeeze=False, sharex=True,
+    )
+    bins = np.linspace(-0.2, 1.0, 61)
+    for ax, (objective, roles) in zip(axes[0], embedded.items()):
+        z = np.concatenate([z for z, _ in roles.values()])
+        y = np.concatenate([y for _, y in roles.values()])
+        similarities = z @ z.T
+        same = y[:, None] == y[None, :]
+        upper = np.triu(np.ones_like(same, dtype=bool), k=1)
+        intra = similarities[same & upper]
+        inter = similarities[~same & upper]
+        ax.hist(intra, bins=bins, alpha=0.6, density=True, label="intra-identity")
+        ax.hist(inter, bins=bins, alpha=0.6, density=True, label="inter-identity")
+        ax.set(
+            title=f"{objective}: cosine similarity",
+            xlabel="pairwise cosine similarity",
+            ylabel="density",
+        )
+        ax.legend(frameon=False)
+    fig.tight_layout()
+
+# %% [markdown]
 # ## Caveats
 #
 # - The quick runs above are a pipeline **smoke test**, not paper-comparable
