@@ -506,3 +506,85 @@ def test_run_reid_device_override(tmp_path):
     assert "test/mAP" in result.metrics
     # Evaluation ran on the requested device: the net ends up there.
     assert next(net.parameters()).device.type == "cpu"
+
+
+# --- objective and detection-score options ---
+
+
+def test_run_reid_rejects_invalid_options(tmp_path):
+    dm = _TinyReIDDataModule(split_seed=42)
+    with pytest.raises(ValueError, match="detection_score"):
+        run_reid(
+            _tiny_net(dm), dm, seed=42, runs_dir=tmp_path,
+            detection_score="softmax",
+        )
+    with pytest.raises(ValueError, match="objective"):
+        run_reid(
+            _tiny_net(dm), dm, seed=42, runs_dir=tmp_path, objective="arcface"
+        )
+
+
+@pytest.fixture(scope="module")
+def gap_supcon_result(tmp_path_factory):
+    tmp_path = tmp_path_factory.mktemp("reid_gap")
+    dm = _TinyReIDDataModule(split_seed=42)
+    net = _tiny_net(dm)
+    result = run_reid(
+        net,
+        dm,
+        max_epochs=1,
+        name="gap-supcon",
+        seed=42,
+        accelerator="cpu",
+        runs_dir=tmp_path,
+        objective="supcon",
+        detection_score="top_gap",
+    )
+    return result, dm, net
+
+
+def test_run_reid_gap_supcon_smoke(gap_supcon_result):
+    result, dm, net = gap_supcon_result
+    assert "test/mAP" in result.metrics
+    assert "test/eer_threshold/dir" in result.metrics
+    summary = json.loads(result.summary_path.read_text())
+    assert summary["detection_score"] == "top_gap"
+    config = json.loads((result.log_dir / "config.json").read_text())
+    assert config["objective"] == "supcon"
+    assert config["detection_score"] == "top_gap"
+
+
+def test_run_reid_gap_thresholds_calibrated_on_gap_scores(gap_supcon_result):
+    result, dm, net = gap_supcon_result
+    loaders = dm.validation_loaders_by_role()
+    gallery_z, gallery_y = _embed_loader(net, loaders["gallery"])
+    known_z, _ = _embed_loader(net, loaders["known_probes"])
+    unknown_z, _ = _embed_loader(net, loaders["unknown_probes"])
+    scores = score_gallery_probe(
+        gallery_z, gallery_y, torch.cat([known_z, unknown_z])
+    )
+    known_mask = torch.tensor(
+        [True] * known_z.shape[0] + [False] * unknown_z.shape[0]
+    )
+    recomputed = calibrate_thresholds(scores.top_gaps, known_mask)
+    assert result.thresholds["eer_threshold"] == pytest.approx(
+        recomputed["eer_threshold"]
+    )
+    assert result.thresholds["far_threshold"] == pytest.approx(
+        recomputed["far_threshold"]
+    )
+
+
+def test_run_reid_predictions_include_detection_score(gap_supcon_result):
+    result, dm, net = gap_supcon_result
+    with result.predictions_path.open() as f:
+        rows = list(csv.DictReader(f))
+    assert "detection_score" in rows[0]
+    for row in rows:
+        detection = float(row["detection_score"])
+        expected = (
+            row["top_identity"]
+            if detection >= result.thresholds["eer_threshold"]
+            else "unknown"
+        )
+        assert row["pred_eer_threshold"] == expected

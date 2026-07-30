@@ -84,8 +84,15 @@ def _predictions_rows(
     probe_labels: torch.Tensor,
     known_mask: torch.Tensor,
     operating_points: dict[str, float],
+    detection_scores: torch.Tensor | None = None,
 ) -> list[dict]:
-    """One row per probe: identity, top match, rank, and thresholded calls."""
+    """One row per probe: identity, top match, rank, and thresholded calls.
+
+    ``detection_scores`` selects the score compared against the operating
+    thresholds (default: the top cosine score).
+    """
+    if detection_scores is None:
+        detection_scores = scores.top_scores
     rows = []
     enrolled = scores.identity_labels
     for i in range(probe_labels.numel()):
@@ -94,17 +101,18 @@ def _predictions_rows(
         rank_positions = (ranked == label).nonzero()
         rank = int(rank_positions[0]) + 1 if rank_positions.numel() else -1
         top_identity = identity_names[int(scores.top_identities[i])]
-        top_score = float(scores.top_scores[i])
+        detection_score = float(detection_scores[i])
         row = {
             "probe_identity": identity_names[label],
             "known": bool(known_mask[i]),
             "top_identity": top_identity,
-            "top_score": top_score,
+            "top_score": float(scores.top_scores[i]),
+            "detection_score": detection_score,
             "rank": rank,
         }
         for point, threshold in operating_points.items():
             row[f"pred_{point}"] = (
-                top_identity if top_score >= threshold else "unknown"
+                top_identity if detection_score >= threshold else "unknown"
             )
         rows.append(row)
     assert enrolled.numel() > 0
@@ -145,8 +153,11 @@ def run_reid(
     seed: int = 42,
     lr: float = 1e-3,
     weight_decay: float = 0.01,
+    objective: str = "triplet",
     triplet_margin: float = 0.3,
     triplet_weight: float = 1.0,
+    supcon_temperature: float = 0.1,
+    detection_score: str = "top_score",
     far_target: float = 0.05,
     accelerator: str = "auto",
     device: str | torch.device | None = None,
@@ -154,10 +165,19 @@ def run_reid(
 ) -> ReIDResult:
     """Train one Re-ID repeat and evaluate open-set metrics on the test roles.
 
-    ``accelerator`` selects the training device (Lightning semantics);
-    ``device`` selects where post-training embedding extraction runs and
-    defaults to the device the trainer used.
+    ``objective`` selects the metric-learning term (``"triplet"`` or
+    ``"supcon"``). ``detection_score`` selects the rejection score:
+    ``"top_score"`` (absolute top cosine) or ``"top_gap"`` (top-1 minus top-2
+    identity score, robust to per-subject score shifts). ``accelerator``
+    selects the training device (Lightning semantics); ``device`` selects
+    where post-training embedding extraction runs and defaults to the device
+    the trainer used.
     """
+    if detection_score not in ("top_score", "top_gap"):
+        raise ValueError(
+            "detection_score must be 'top_score' or 'top_gap', "
+            f"got {detection_score!r}"
+        )
     manifest_seed = dm.split_manifest.seed
     if seed != manifest_seed:
         raise ValueError(
@@ -168,8 +188,10 @@ def run_reid(
     module = ReIDModule(
         net,
         num_train_identities=dm.output_dim,
+        objective=objective,
         triplet_margin=triplet_margin,
         triplet_weight=triplet_weight,
+        supcon_temperature=supcon_temperature,
         lr=lr,
         weight_decay=weight_decay,
     )
@@ -202,17 +224,24 @@ def run_reid(
     log_dir = Path(trainer.log_dir)
     far_point = f"far{round(far_target * 100):02d}_threshold"
 
+    def _detection(scores: ReIDScores) -> torch.Tensor:
+        return (
+            scores.top_gaps if detection_score == "top_gap"
+            else scores.top_scores
+        )
+
     # Thresholds come from validation scores only; test labels never enter.
     val_scores, _, val_known = _score_roles(
         net, dm.validation_loaders_by_role(), eval_device
     )
     thresholds = calibrate_thresholds(
-        val_scores.top_scores, val_known, far_target=far_target
+        _detection(val_scores), val_known, far_target=far_target
     )
 
     test_scores, test_labels, test_known = _score_roles(
         net, dm.test_loaders_by_role(), eval_device
     )
+    test_detection = _detection(test_scores)
     num_identities = test_scores.identity_labels.numel()
     capped = min(3, num_identities)
     retrieval = retrieval_metrics(
@@ -226,7 +255,7 @@ def run_reid(
         "test/rank3": retrieval[f"rank{capped}"],
         "test/mAP": retrieval["mAP"],
     }
-    detection = detection_metrics(test_scores.top_scores, test_known)
+    detection = detection_metrics(test_detection, test_known)
     metrics["test/auroc"] = detection["auroc"]
     metrics["test/eer"] = detection["eer"]
     operating_points = {
@@ -235,7 +264,8 @@ def run_reid(
     }
     for point, threshold in operating_points.items():
         open_set = open_set_metrics(
-            test_scores, test_labels, test_known, threshold
+            test_scores, test_labels, test_known, threshold,
+            detection_scores=test_detection,
         )
         for key, value in open_set.items():
             metrics[f"test/{point}/{key}"] = value
@@ -252,8 +282,11 @@ def run_reid(
             "seed": seed,
             "lr": lr,
             "weight_decay": weight_decay,
+            "objective": objective,
             "triplet_margin": triplet_margin,
             "triplet_weight": triplet_weight,
+            "supcon_temperature": supcon_temperature,
+            "detection_score": detection_score,
             "far_target": far_target,
         },
     )
@@ -261,13 +294,14 @@ def run_reid(
         log_dir / "predictions.csv",
         _predictions_rows(
             dm.identity_names, test_scores, test_labels, test_known,
-            operating_points,
+            operating_points, test_detection,
         ),
     )
     summary_path = _save_json(
         log_dir / "summary.json",
         {
             "metrics": metrics,
+            "detection_score": detection_score,
             "thresholds": {**thresholds, "calibrated_on": "validation"},
             "best_val_mAP": float(checkpoint.best_model_score),
             "checkpoint": str(checkpoint.best_model_path),
