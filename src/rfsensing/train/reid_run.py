@@ -157,6 +157,8 @@ def run_reid(
     triplet_margin: float = 0.3,
     triplet_weight: float = 1.0,
     supcon_temperature: float = 0.1,
+    arcface_scale: float = 30.0,
+    arcface_margin: float = 0.2,
     detection_score: str = "top_score",
     far_target: float = 0.05,
     accelerator: str = "auto",
@@ -165,8 +167,10 @@ def run_reid(
 ) -> ReIDResult:
     """Train one Re-ID repeat and evaluate open-set metrics on the test roles.
 
-    ``objective`` selects the metric-learning term (``"triplet"`` or
-    ``"supcon"``). ``detection_score`` selects the rejection score:
+    ``objective`` selects the training objective: ``"triplet"`` or
+    ``"supcon"`` add a metric-learning term to the auxiliary identity CE,
+    while ``"arcface"`` trains an additive-angular-margin softmax over the
+    embeddings instead. ``detection_score`` selects the rejection score:
     ``"top_score"`` (absolute top cosine) or ``"top_gap"`` (top-1 minus top-2
     identity score, robust to per-subject score shifts). ``accelerator``
     selects the training device (Lightning semantics); ``device`` selects
@@ -192,6 +196,8 @@ def run_reid(
         triplet_margin=triplet_margin,
         triplet_weight=triplet_weight,
         supcon_temperature=supcon_temperature,
+        arcface_scale=arcface_scale,
+        arcface_margin=arcface_margin,
         lr=lr,
         weight_decay=weight_decay,
     )
@@ -286,6 +292,8 @@ def run_reid(
             "triplet_margin": triplet_margin,
             "triplet_weight": triplet_weight,
             "supcon_temperature": supcon_temperature,
+            "arcface_scale": arcface_scale,
+            "arcface_margin": arcface_margin,
             "detection_score": detection_score,
             "far_target": far_target,
         },

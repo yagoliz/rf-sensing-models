@@ -520,8 +520,28 @@ def test_run_reid_rejects_invalid_options(tmp_path):
         )
     with pytest.raises(ValueError, match="objective"):
         run_reid(
-            _tiny_net(dm), dm, seed=42, runs_dir=tmp_path, objective="arcface"
+            _tiny_net(dm), dm, seed=42, runs_dir=tmp_path, objective="softmax"
         )
+
+
+def test_run_reid_arcface_smoke(tmp_path):
+    dm = _TinyReIDDataModule(split_seed=42)
+    result = run_reid(
+        _tiny_net(dm),
+        dm,
+        max_epochs=1,
+        name="arcface-gap",
+        seed=42,
+        accelerator="cpu",
+        runs_dir=tmp_path,
+        objective="arcface",
+        detection_score="top_gap",
+    )
+    assert "test/mAP" in result.metrics
+    config = json.loads((result.log_dir / "config.json").read_text())
+    assert config["objective"] == "arcface"
+    assert config["arcface_scale"] == 30.0
+    assert config["arcface_margin"] == 0.2
 
 
 @pytest.fixture(scope="module")

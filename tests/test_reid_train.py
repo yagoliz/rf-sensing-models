@@ -337,9 +337,112 @@ def test_module_supcon_objective(monkeypatch):
 
 def test_module_rejects_invalid_objective():
     with pytest.raises(ValueError, match="objective"):
-        ReIDModule(_net(), num_train_identities=4, objective="arcface")
+        ReIDModule(_net(), num_train_identities=4, objective="softmax")
     with pytest.raises(ValueError, match="temperature"):
         ReIDModule(
             _net(), num_train_identities=4, objective="supcon",
             supcon_temperature=0.0,
+        )
+
+
+# --- ArcFaceHead ---
+
+
+def test_arcface_head_inference_is_scaled_cosine():
+    from rfsensing.train.reid import ArcFaceHead
+
+    head = ArcFaceHead(2, 3, scale=10.0, margin=0.2)
+    embeddings = torch.randn(5, 2)
+    logits = head(embeddings)
+    expected = 10.0 * (
+        F.normalize(embeddings, dim=1) @ F.normalize(head.weight, dim=1).T
+    )
+    assert torch.allclose(logits, expected, atol=1e-5)
+
+
+def test_arcface_head_penalizes_only_target_class():
+    from rfsensing.train.reid import ArcFaceHead
+
+    head = ArcFaceHead(4, 3, scale=1.0, margin=0.3)
+    embeddings = torch.randn(6, 4)
+    labels = torch.tensor([0, 1, 2, 0, 1, 2])
+    plain = head(embeddings)
+    with_margin = head(embeddings, labels)
+    one_hot = F.one_hot(labels, 3).bool()
+    # cos(theta + m) <= cos(theta): the target logit can only shrink.
+    assert (with_margin[one_hot] <= plain[one_hot] + 1e-6).all()
+    assert torch.allclose(with_margin[~one_hot], plain[~one_hot], atol=1e-6)
+
+
+def test_arcface_head_margin_matches_angle_shift():
+    from rfsensing.train.reid import ArcFaceHead
+
+    head = ArcFaceHead(2, 2, scale=1.0, margin=0.3)
+    with torch.no_grad():
+        head.weight.copy_(torch.eye(2))
+    theta = math.radians(40)
+    embeddings = torch.tensor([[math.cos(theta), math.sin(theta)]])
+    logits = head(embeddings, torch.tensor([0]))
+    assert logits[0, 0].item() == pytest.approx(math.cos(theta + 0.3), abs=1e-5)
+    assert logits[0, 1].item() == pytest.approx(math.cos(math.pi / 2 - theta), abs=1e-5)
+
+
+def test_arcface_head_propagates_gradients():
+    from rfsensing.train.reid import ArcFaceHead
+
+    head = ArcFaceHead(4, 3, scale=30.0, margin=0.2)
+    raw = torch.randn(6, 4, requires_grad=True)
+    labels = torch.tensor([0, 1, 2, 0, 1, 2])
+    loss = F.cross_entropy(head(raw, labels), labels)
+    loss.backward()
+    assert raw.grad is not None and torch.isfinite(raw.grad).all()
+    assert head.weight.grad is not None
+    assert torch.isfinite(head.weight.grad).all()
+
+
+def test_arcface_head_rejects_invalid_hyperparameters():
+    from rfsensing.train.reid import ArcFaceHead
+
+    with pytest.raises(ValueError, match="scale"):
+        ArcFaceHead(4, 3, scale=0.0)
+    with pytest.raises(ValueError, match="margin"):
+        ArcFaceHead(4, 3, margin=0.0)
+    with pytest.raises(ValueError, match="margin"):
+        ArcFaceHead(4, 3, margin=math.pi)
+
+
+# --- ReIDModule arcface objective ---
+
+
+def test_module_arcface_objective(monkeypatch):
+    module = ReIDModule(_net(), num_train_identities=4, objective="arcface")
+    assert module.arcface is not None
+    logged = _logged(module, monkeypatch)
+    batch = (torch.randn(8, *IN_SHAPE), torch.tensor([0, 0, 1, 1, 2, 2, 3, 3]))
+    loss = module.training_step(batch, 0)
+    assert {"train/loss", "train/arcface_loss"} <= logged.keys()
+    assert "train/ce_loss" not in logged
+    assert loss.requires_grad and torch.isfinite(loss)
+
+
+def test_module_arcface_weight_is_optimized():
+    module = ReIDModule(_net(), num_train_identities=4, objective="arcface")
+    parameters = {
+        id(p) for group in [list(module.parameters())] for p in group
+    }
+    assert id(module.arcface.weight) in parameters
+    # Other objectives must not carry an unused margin head.
+    assert ReIDModule(_net(), num_train_identities=4).arcface is None
+
+
+def test_module_arcface_rejects_invalid_hyperparameters():
+    with pytest.raises(ValueError, match="margin"):
+        ReIDModule(
+            _net(), num_train_identities=4, objective="arcface",
+            arcface_margin=math.pi,
+        )
+    with pytest.raises(ValueError, match="scale"):
+        ReIDModule(
+            _net(), num_train_identities=4, objective="arcface",
+            arcface_scale=-1.0,
         )

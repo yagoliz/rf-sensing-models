@@ -1,10 +1,15 @@
-"""Joint classification + batch-hard triplet training for person Re-ID.
+"""Metric-learning objectives and Lightning module for person Re-ID.
 
-The encoder is any registry model exposing ``embed(x)`` and ``head``: one
-embedding pass feeds both the auxiliary identity classifier (raw embeddings)
-and the cosine triplet loss (L2-normalized embeddings). The classifier
-stabilizes training but is never used for gallery matching.
+The encoder is any registry model exposing ``embed(x)`` and ``head``. For the
+``triplet`` and ``supcon`` objectives one embedding pass feeds both the
+auxiliary identity classifier (raw embeddings) and the metric loss
+(L2-normalized embeddings); the classifier stabilizes training but is never
+used for gallery matching. The ``arcface`` objective replaces the plain
+classifier with an additive-angular-margin softmax over the embeddings, so
+the margin penalty itself shapes the cosine geometry used at matching time.
 """
+
+import math
 
 import lightning as L
 import torch
@@ -80,6 +85,58 @@ def supcon_loss(
     return -mean_log_prob_positive.mean()
 
 
+class ArcFaceHead(nn.Module):
+    """Additive angular margin softmax head (ArcFace, Deng et al. 2019).
+
+    Logits are scaled cosines between L2-normalized embeddings and
+    L2-normalized class weights. During training the target class's angle is
+    penalized by ``margin`` radians before scaling, which forces intra-class
+    embeddings into a tighter cone and pushes classes apart *angularly* — the
+    same geometry cosine gallery matching operates on. Called without labels
+    it returns plain scaled cosines (no margin), the inference path.
+    """
+
+    def __init__(
+        self,
+        embed_dim: int,
+        num_classes: int,
+        *,
+        scale: float = 30.0,
+        margin: float = 0.2,
+    ):
+        if scale <= 0:
+            raise ValueError(f"scale must be positive, got {scale}")
+        if not 0 < margin < math.pi / 2:
+            raise ValueError(
+                f"margin must be in (0, pi/2) radians, got {margin}"
+            )
+        super().__init__()
+        self.scale = scale
+        self.margin = margin
+        self.weight = nn.Parameter(torch.empty(num_classes, embed_dim))
+        nn.init.xavier_uniform_(self.weight)
+
+    def forward(
+        self, embeddings: torch.Tensor, labels: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        cosine = F.normalize(embeddings.float(), dim=1) @ F.normalize(
+            self.weight, dim=1
+        ).T
+        if labels is None:
+            return self.scale * cosine
+        sine = (1.0 - cosine.square()).clamp_min(0.0).sqrt()
+        # cos(theta + m), with the standard linear fallback once theta + m
+        # would pass pi (where the additive margin stops being monotonic).
+        phi = cosine * math.cos(self.margin) - sine * math.sin(self.margin)
+        phi = torch.where(
+            cosine > math.cos(math.pi - self.margin),
+            phi,
+            cosine - self.margin * math.sin(self.margin),
+        )
+        one_hot = F.one_hot(labels, self.weight.shape[0]).bool()
+        return self.scale * torch.where(one_hot, phi, cosine)
+
+
 class ReIDModule(_SupervisedModule):
     """Lightning module for open-set Re-ID embedding training.
 
@@ -97,6 +154,8 @@ class ReIDModule(_SupervisedModule):
         triplet_margin: float = 0.3,
         triplet_weight: float = 1.0,
         supcon_temperature: float = 0.1,
+        arcface_scale: float = 30.0,
+        arcface_margin: float = 0.2,
         lr: float = 1e-3,
         weight_decay: float = 0.01,
     ):
@@ -111,9 +170,10 @@ class ReIDModule(_SupervisedModule):
                 f"classifier width {out_features} does not match "
                 f"{num_train_identities} training identities"
             )
-        if objective not in ("triplet", "supcon"):
+        if objective not in ("triplet", "supcon", "arcface"):
             raise ValueError(
-                f"objective must be 'triplet' or 'supcon', got {objective!r}"
+                "objective must be 'triplet', 'supcon', or 'arcface', "
+                f"got {objective!r}"
             )
         if triplet_weight < 0:
             raise ValueError(f"triplet_weight must be >= 0, got {triplet_weight}")
@@ -125,12 +185,31 @@ class ReIDModule(_SupervisedModule):
             )
         super().__init__(net, lr, weight_decay)
         self.criterion = nn.CrossEntropyLoss()
+        # The ArcFaceHead validates scale/margin; building it eagerly keeps
+        # its weight in the optimizer and the checkpoint state.
+        self.arcface = (
+            ArcFaceHead(
+                head.in_features,
+                num_train_identities,
+                scale=arcface_scale,
+                margin=arcface_margin,
+            )
+            if objective == "arcface"
+            else None
+        )
         self._val_embeddings: dict[int, list[torch.Tensor]] = {0: [], 1: []}
         self._val_labels: dict[int, list[torch.Tensor]] = {0: [], 1: []}
 
     def training_step(self, batch, batch_idx):
         x, y = batch
         raw = self.net.embed(x)
+        if self.hparams.objective == "arcface":
+            # The margin softmax subsumes the auxiliary classifier: it *is*
+            # the identity CE, applied to the matching-time cosine geometry.
+            loss = self.criterion(self.arcface(raw, y), y)
+            self.log("train/loss", loss, prog_bar=True)
+            self.log("train/arcface_loss", loss)
+            return loss
         logits = self.net.head(raw)
         ce_loss = self.criterion(logits, y)
         z = F.normalize(raw, dim=1)

@@ -5,6 +5,7 @@ from rfsensing.train.module import (  # noqa: F401
     RegressionModule,
 )
 from rfsensing.train.reid import (  # noqa: F401
+    ArcFaceHead,
     ReIDModule,
     batch_hard_triplet_loss,
     supcon_loss,
