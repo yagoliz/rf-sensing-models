@@ -12,7 +12,8 @@
 # 1 test-unknown. Thresholds are calibrated on validation scores only.
 #
 # The ViT here is the generic rfsensing baseline — it is **not** a WhoFi
-# implementation; a faithful WhoFi reproduction remains future work.
+# implementation; notebook 08 reproduces WhoFi faithfully and also runs its
+# encoder under this protocol.
 
 # %%
 import json
@@ -454,6 +455,6 @@ if embedded:
 #   test repeat — and with exactly three enrolled, rank-3 is trivially 1.0;
 #   it only becomes informative with larger galleries.
 # - The supervised-contrastive and ArcFace objectives are benchmarked here
-#   and in notebook 07 (`objective="supcon"` / `objective="arcface"`);
-#   WhoFi-style architectures and leave-one-day/room-out protocols remain
-#   future work tracked in the README roadmap.
+#   and in notebook 07 (`objective="supcon"` / `objective="arcface"`), and
+#   the WhoFi architecture in notebook 08; leave-one-day/room-out protocols
+#   remain future work tracked in the README roadmap.

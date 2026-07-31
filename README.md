@@ -21,7 +21,7 @@ repository focuses on datasets, models, training, and evaluation.
 |---|---|
 | Tasks | Activity classification, closed-set person classification, open-set person re-identification with unknown rejection, group-size classification, scalar count regression |
 | Datasets | UT_HAR, NTU-Fi HAR, NTU-Fi HumanID (closed-set and identity-disjoint Re-ID views), Widar, WiMANS, and generated synthetic data |
-| Models | MLP, LeNet, LSTM/BiLSTM, ResNet-18, and ViT |
+| Models | MLP, LeNet, LSTM/BiLSTM, ResNet-18, ViT, and WhoFi (Transformer/LSTM/BiLSTM signal encoders) |
 | Representations | Dataset-provided CSI amplitude and Widar BVP tensors; configurable WiMANS temporal pooling and normalization |
 | Evaluation | Accuracy, rank-k accuracy, confusion matrices, count MAE, ±1-person accuracy, rounded regression accuracy, and gallery-probe retrieval/rejection metrics |
 | Training | Task-aware Lightning modules, joint classification + batch-hard triplet Re-ID training, best-checkpoint restoration, TensorBoard logging, and model embeddings |
@@ -148,7 +148,9 @@ A third option, `objective="arcface"`, replaces the joint objective with an
 additive-angular-margin softmax (ArcFace) over the embeddings: the target
 identity's angle is penalized by `arcface_margin` radians before scaling by
 `arcface_scale`, so the margin directly shapes the cosine geometry that
-gallery matching operates on.
+gallery matching operates on. A fourth, `objective="inbatch"`, is WhoFi's
+in-batch negative loss — row-wise cross-entropy over the cosine matrix of
+paired same-identity samples — and requires `samples_per_identity=2`.
 The best checkpoint is selected by validation mAP. Both rejection thresholds
 — the validation EER point and the strictest threshold with validation
 FAR ≤ 5% — are calibrated on validation scores only and applied unchanged to
@@ -228,6 +230,22 @@ Training device selection follows Lightning's `accelerator` argument
 embedding extraction runs on the same device; pass `device=` to `run_reid`
 or `run_reid_repeats` to override it (e.g. `device="cpu"`).
 
+### WhoFi reproduction
+
+`models.build("whofi", ...)` implements the WhoFi signal encoders (Avola et
+al. 2025, arXiv:2507.12869): the CSI sample is treated as a packet sequence
+of flattened antenna x subcarrier features, subsampled to 100 steps, encoded
+by a Transformer (default), LSTM, or BiLSTM, and projected to a linear
+signature embedding. `rfsensing.train.run_whofi` /
+`run_whofi_repeats` reproduce the paper's closed-set protocol on
+`ntu_fi_humanid` — in-batch negative loss over identity pairs, Adam at
+lr 1e-4 with StepLR decay, a fixed epoch budget with no model selection —
+and report rank-1/3/5 and mAP under two gallery readings (train-set
+enrollment and leave-one-out inside the test split), since the paper leaves
+the gallery construction unspecified. Notebook `08_whofi_reproduction`
+compares against the published table and additionally evaluates the WhoFi
+encoder under the open-set protocol above.
+
 ## Datasets
 
 | Registry name | Task | Sample shape | Classes/output | Default protocol |
@@ -274,6 +292,7 @@ The notebooks are experiment entry points rather than package internals:
 | `05_wimans_counting` | WiMANS count classification versus regression |
 | `06_open_set_person_reid` | NTU-Fi identity-disjoint Re-ID with unknown rejection |
 | `07_reid_variant_analysis` | Per-seed Re-ID objective comparison, detection-score forensics, ArcFace benchmark |
+| `08_whofi_reproduction` | WhoFi (arXiv:2507.12869) closed-set reproduction plus its open-set evaluation |
 
 Notebooks are paired Jupytext percent-format `.py` sources and generated
 `.ipynb` files. Edit the Python source, then regenerate:
@@ -287,9 +306,6 @@ uv run jupytext --to ipynb notebooks/05_wimans_counting.py
 The next steps align this package with the project’s individual and group
 sensing goals:
 
-- **WhoFi reproduction:** a faithful WhoFi architecture and
-  published-protocol reproduction remains explicit future work; the current
-  ViT Re-ID baseline is a generic Transformer, not a WhoFi implementation.
 - **Robustness protocols:** leave-one-day-out and leave-one-room-out splits
   instead of relying only on fixed or random splits.
 - **Temporal gait models:** CNN+GRU and temporal Transformer baselines for

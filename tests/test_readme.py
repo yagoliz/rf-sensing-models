@@ -30,7 +30,9 @@ def test_readme_describes_the_broader_research_platform(tmp_path):
     assert 'data.build("wimans", target="regression"' in source
     assert "BVP" in current
     assert "re-identification" in current
-    assert "WhoFi" in roadmap
+    # The WhoFi reproduction shipped (notebook 08); the roadmap keeps only
+    # genuinely open items.
+    assert "WhoFi" not in roadmap
     for option in (
         '"pad_side"',
         '"environments"',
@@ -84,14 +86,17 @@ def test_readme_documents_open_set_reid():
         assert artifact in source
     assert "06_open_set_person_reid" in source
     assert "WhoFi" in source
-    assert "future work" in source
-    # WhoFi reproduction stays on the roadmap; ArcFace and the supervised
-    # contrastive objective are implemented features documented above it.
-    for item in ("WhoFi", "HDF5"):
-        assert item in roadmap
+    assert "roadmap items, not implemented features" in source
+    # ArcFace, SupCon, and the WhoFi reproduction are implemented features
+    # documented above the roadmap, not roadmap items.
+    assert "HDF5" in roadmap
     assert "ArcFace" not in roadmap
+    assert "WhoFi" not in roadmap
     assert 'objective="arcface"' in source
     assert "arcface_margin" in source and "arcface_scale" in source
+    assert 'objective="inbatch"' in source
+    assert "2507.12869" in source  # WhoFi arXiv reference
+    assert "08_whofi_reproduction" in source
 
     assert "supcon" in source
     assert "top_gap" in source
@@ -106,5 +111,9 @@ def test_readme_documents_open_set_reid():
         "ReIDModule",
         "batch_hard_triplet_loss",
         "supcon_loss",
+        "in_batch_negative_loss",
+        "run_whofi",
+        "run_whofi_repeats",
+        "leave_one_out_metrics",
     ):
         assert hasattr(train, api)

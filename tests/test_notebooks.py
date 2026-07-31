@@ -71,3 +71,26 @@ def test_reid_variant_analysis_notebook_source_contract():
     # Per-seed paired analysis and cosine-geometry comparison.
     assert "per_seed_table" in source
     assert "intra" in source and "inter" in source
+
+
+def test_whofi_reproduction_notebook_source_contract():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "notebooks"
+        / "08_whofi_reproduction.py"
+    )
+    assert path.is_file()
+    source = path.read_text()
+    compile(source, str(path), "exec")
+    assert "2507.12869" in source
+    assert "run_whofi_repeats" in source
+    assert "RUN_REPRODUCTION" in source
+    # Published table hard-coded for side-by-side comparison.
+    assert "PUBLISHED" in source
+    assert "0.955" in source and "0.884" in source
+    # Both gallery readings of the ambiguous evaluation protocol.
+    assert "enrollment" in source and "loo" in source
+    # Open-set evaluation of the WhoFi encoder under the 06/07 protocol.
+    assert 'objective="inbatch"' in source
+    assert "whofi-reid" in source
+    assert "RUN_OPEN_SET" in source
