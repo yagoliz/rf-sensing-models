@@ -144,6 +144,11 @@ metric-learning term on L2-normalized embeddings — a batch-hard triplet loss
 by default, or a supervised contrastive loss via `objective="supcon"` (the
 contrastive log-sum-exp keeps pushing all negatives apart, spreading
 identities over the hypersphere so cosine scores do not saturate near 1.0).
+A third option, `objective="arcface"`, replaces the joint objective with an
+additive-angular-margin softmax (ArcFace) over the embeddings: the target
+identity's angle is penalized by `arcface_margin` radians before scaling by
+`arcface_scale`, so the margin directly shapes the cosine geometry that
+gallery matching operates on.
 The best checkpoint is selected by validation mAP. Both rejection thresholds
 — the validation EER point and the strictest threshold with validation
 FAR ≤ 5% — are calibrated on validation scores only and applied unchanged to
@@ -268,6 +273,7 @@ The notebooks are experiment entry points rather than package internals:
 | `04_widar` | Widar gesture-recognition benchmark |
 | `05_wimans_counting` | WiMANS count classification versus regression |
 | `06_open_set_person_reid` | NTU-Fi identity-disjoint Re-ID with unknown rejection |
+| `07_reid_variant_analysis` | Per-seed Re-ID objective comparison, detection-score forensics, ArcFace benchmark |
 
 Notebooks are paired Jupytext percent-format `.py` sources and generated
 `.ipynb` files. Edit the Python source, then regenerate:
@@ -284,8 +290,6 @@ sensing goals:
 - **WhoFi reproduction:** a faithful WhoFi architecture and
   published-protocol reproduction remains explicit future work; the current
   ViT Re-ID baseline is a generic Transformer, not a WhoFi implementation.
-- **Richer Re-ID objectives:** ArcFace margin-softmax on top of the existing
-  triplet and supervised contrastive options.
 - **Robustness protocols:** leave-one-day-out and leave-one-room-out splits
   instead of relying only on fixed or random splits.
 - **Temporal gait models:** CNN+GRU and temporal Transformer baselines for

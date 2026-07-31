@@ -246,21 +246,21 @@ aggregate_table(OPEN_SET, prefix="extended-reid")
 score_histogram("extended-reid")
 
 # %% [markdown]
-# ## Variant: SupCon objective + top-gap detection score
+# ## Variant: SupCon objective
 #
-# Two options aimed at the failure modes of absolute-score thresholding:
+# `objective="supcon"` replaces the batch-hard triplet term with a
+# supervised contrastive loss whose log-sum-exp keeps pushing all negatives
+# apart, spreading identities over the hypersphere instead of stopping at a
+# fixed margin — cosine scores stop saturating near 1.0.
 #
-# - `objective="supcon"` replaces the batch-hard triplet term with a
-#   supervised contrastive loss whose log-sum-exp keeps pushing all
-#   negatives apart, spreading identities over the hypersphere instead of
-#   stopping at a fixed margin — cosine scores stop saturating near 1.0.
-# - `detection_score="top_gap"` rejects on the top-1 minus top-2 identity
-#   score instead of the absolute top cosine. A probe equidistant from two
-#   enrolled identities has a high top score but a near-zero gap, so gap
-#   thresholds are robust to per-subject score shifts.
-#
-# Both are independent switches; this cell runs them together on the same
-# seeds as the extended benchmark for a paired comparison.
+# A second, independent switch — `detection_score="top_gap"`, rejecting on
+# the top-1 minus top-2 identity score instead of the absolute top cosine —
+# was originally run together with SupCon under the `supcon-gap-reid-*`
+# name. Those gap runs turned out to score *worse than chance* and were
+# superseded by top-score re-runs on the same seeds; the committed
+# aggregates below threshold the absolute top score, and only the directory
+# name is historical. Notebook 07 keeps the superseded runs and analyzes
+# why the gap fails on this protocol.
 
 # %%
 RUN_VARIANT = False
@@ -281,7 +281,7 @@ if RUN_VARIANT:
             name=f"supcon-gap-reid-{encoder}",
             runs_dir=RUNS_DIR,
             objective="supcon",
-            detection_score="top_gap",
+            detection_score="top_score",
         )
 
 # %%
@@ -299,6 +299,9 @@ score_histogram("supcon-gap-reid")
 # thresholds near 1.0) recover DIR, and whether the confusable-unknown
 # rotation improves at all — if that subject genuinely resembles an enrolled
 # one, no objective can separate them and only more training identities help.
+# Notebook 07 runs exactly this paired analysis: the gains concentrate in
+# the reject-all rotations, and the confusable rotation recovers for the
+# ResNet but not the ViT.
 
 # %% [markdown]
 # ## Embedding space per individual: triplet vs. SupCon
@@ -450,6 +453,7 @@ if embedded:
 # - Rank-3 replaces rank-5 because only three identities are enrolled per
 #   test repeat — and with exactly three enrolled, rank-3 is trivially 1.0;
 #   it only becomes informative with larger galleries.
-# - WhoFi-style architectures, ArcFace/supervised-contrastive objectives,
-#   and leave-one-day/room-out protocols are future work tracked in the
-#   README roadmap.
+# - The supervised-contrastive and ArcFace objectives are benchmarked here
+#   and in notebook 07 (`objective="supcon"` / `objective="arcface"`);
+#   WhoFi-style architectures and leave-one-day/room-out protocols remain
+#   future work tracked in the README roadmap.

@@ -85,9 +85,13 @@ def test_readme_documents_open_set_reid():
     assert "06_open_set_person_reid" in source
     assert "WhoFi" in source
     assert "future work" in source
-    # WhoFi reproduction and richer objectives stay on the roadmap.
-    for item in ("WhoFi", "ArcFace", "supervised contrastive", "HDF5"):
+    # WhoFi reproduction stays on the roadmap; ArcFace and the supervised
+    # contrastive objective are implemented features documented above it.
+    for item in ("WhoFi", "HDF5"):
         assert item in roadmap
+    assert "ArcFace" not in roadmap
+    assert 'objective="arcface"' in source
+    assert "arcface_margin" in source and "arcface_scale" in source
 
     assert "supcon" in source
     assert "top_gap" in source

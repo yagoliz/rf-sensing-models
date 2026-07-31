@@ -37,8 +37,37 @@ def test_open_set_reid_notebook_source_contract():
     assert "smoke test" in source
     assert "WhoFi" in source
     assert 'objective="supcon"' in source
-    assert 'detection_score="top_gap"' in source
+    # The variant cell reproduces the committed aggregates (top score);
+    # the superseded top-gap experiment is documented in the markdown.
+    assert 'detection_score="top_score"' in source
+    assert "top_gap" in source
     # Embedding-space comparison: 2-D projection + cosine histograms.
     assert "project(" in source
     assert "tsne" in source
+    assert "intra" in source and "inter" in source
+
+
+def test_reid_variant_analysis_notebook_source_contract():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "notebooks"
+        / "07_reid_variant_analysis.py"
+    )
+    assert path.is_file()
+    source = path.read_text()
+    compile(source, str(path), "exec")
+    # Reads notebook 06's artifacts; never retrains them.
+    assert "aggregate_summary.json" in source
+    assert "extended-reid" in source
+    assert "supcon-gap-reid" in source
+    # Detection-score forensics compare both scorers per probe.
+    assert "auroc_gap" in source and "auroc_top" in source
+    assert "roc_auc_score" in source
+    # ArcFace benchmark: opt-in training, paired with the top score.
+    assert "RUN_ARCFACE" in source
+    assert 'objective="arcface"' in source
+    assert 'detection_score="top_score"' in source
+    assert "arcface-reid" in source
+    # Per-seed paired analysis and cosine-geometry comparison.
+    assert "per_seed_table" in source
     assert "intra" in source and "inter" in source
