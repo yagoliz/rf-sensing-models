@@ -466,6 +466,195 @@ if embedded:
     fig.tight_layout()
 
 # %% [markdown]
+# ## What would widen the known-unknown gap?
+#
+# The operating-point errors all live in the thin overlap between known and
+# unknown top-score distributions. Three quick experiments probe what moves
+# that overlap — in particular whether "more training data" helps:
+#
+# 1. **Fewer training identities** — train on t of the 7 training subjects
+#    (`class_names` truncated before setup; the evaluation subjects of each
+#    seed stay identical across conditions, so rows are paired per seed).
+# 2. **Fewer samples per identity** — all 7 subjects, half the samples each.
+# 3. **Probe aggregation** — no retraining: average k probe embeddings per
+#    decision before scoring, from the saved SupCon checkpoints.
+#
+# All training conditions use the current best recipe (SupCon + top-score,
+# ResNet18, 50 epochs) with 3 seeds; expect visible seed noise.
+
+# %%
+RUN_ABLATION = False
+ABLATION_SEEDS = (42, 43, 44)
+
+
+def make_ablation_dm(seed, train_identities=7, sample_fraction=1.0):
+    dm = data.build(
+        "ntu_fi_humanid_reid",
+        root=DATA_DIR,
+        split_seed=seed,
+        identities_per_batch=4,
+        samples_per_identity=4,
+    )
+    # Truncating class_names before setup shrinks the training set and the
+    # classifier width together; evaluation roles come from the manifest and
+    # are untouched.
+    dm.class_names = dm.class_names[:train_identities]
+    if sample_fraction < 1.0:
+        original_setup = dm.setup
+
+        def setup(stage=None, _dm=dm, _setup=original_setup):
+            _setup(stage)
+            by_label = {}
+            for path, label in zip(_dm.train_set.files, _dm.train_set.labels):
+                by_label.setdefault(label, []).append(path)
+            files, labels = [], []
+            for label, paths in sorted(by_label.items()):
+                for path in paths[: max(2, int(len(paths) * sample_fraction))]:
+                    files.append(path)
+                    labels.append(label)
+            _dm.train_set.files = files
+            _dm.train_set.labels = labels
+
+        dm.setup = setup
+    return dm
+
+
+ABLATION_CONDITIONS = {
+    "ablate-train-ids-4": {"train_identities": 4},
+    "ablate-train-ids-5": {"train_identities": 5},
+    "ablate-train-ids-6": {"train_identities": 6},
+    "ablate-train-ids-7": {"train_identities": 7},
+    "ablate-half-samples-7ids": {"sample_fraction": 0.5},
+}
+
+if RUN_ABLATION:
+    for condition, kwargs in ABLATION_CONDITIONS.items():
+        run_reid_repeats(
+            lambda dm: models.build(
+                "resnet18",
+                in_shape=dm.sample_shape,
+                num_classes=dm.output_dim,
+                base_width=32,
+            ),
+            lambda seed, kwargs=kwargs: make_ablation_dm(seed, **kwargs),
+            seeds=ABLATION_SEEDS,
+            max_epochs=50,
+            name=condition,
+            runs_dir=RUNS_DIR,
+            objective="supcon",
+            detection_score="top_score",
+        )
+
+# %%
+ABLATION_METRICS = [
+    "test/auroc",
+    "test/eer_threshold/dir",
+    "test/rank1",
+    "test/mAP",
+]
+
+
+def ablation_table():
+    rows = {}
+    for condition in ABLATION_CONDITIONS:
+        aggregate_path = REID_RUNS / condition / "aggregate_summary.json"
+        if not aggregate_path.exists():
+            print(f"no saved results for {condition}; run the ablation first")
+            continue
+        stats = json.loads(aggregate_path.read_text())["metrics"]
+        rows[condition] = {
+            metric: f"{stats[metric]['mean']:.3f} ± {stats[metric]['std']:.3f}"
+            for metric in ABLATION_METRICS
+        }
+    return pd.DataFrame(rows).T
+
+
+ablation_table()
+
+# %% [markdown]
+# In our runs, neither data axis moved detection systematically: AUROC was
+# flat within noise from 4 to 7 training identities (even per-seed paired,
+# the direction flips between rotations), and halving the samples cost at
+# most a few points. The overlap is dominated by factors training volume
+# cannot fix at this scale — whether the rotation's unknown subject happens
+# to resemble an enrolled one, and the single-session, single-room nature of
+# the amplitude features. Identity scaling in the metric-learning literature
+# operates over orders of magnitude (hundreds to thousands of identities);
+# 4 → 7 cannot show it, which is the quantitative argument for the in-house
+# captures rather than for squeezing NTU-Fi harder. Note that MPS training
+# is not bit-deterministic, so a re-run can jitter individual rotations.
+
+# %%
+def embed_roles_by_role(net, dm):
+    roles = {}
+    for role, loader in dm.test_loaders_by_role().items():
+        zs, ys = [], []
+        for x, y in loader:
+            zs.append(F.normalize(net.embed(x), dim=1))
+            ys.append(y)
+        roles[role] = (torch.cat(zs), torch.cat(ys))
+    return roles
+
+
+def aggregate_probes(z, y, k):
+    """Average consecutive same-subject embeddings in chunks of k."""
+    chunks = []
+    for subject in y.unique():
+        zs = z[y == subject]
+        for i in range(0, len(zs) - k + 1, k):
+            chunks.append(F.normalize(zs[i : i + k].mean(0), dim=0))
+    return torch.stack(chunks)
+
+
+@torch.no_grad()
+def aggregation_sweep(ks=(1, 3, 5), encoder="resnet18"):
+    from sklearn.metrics import roc_auc_score
+
+    results = {k: [] for k in ks}
+    for seed in SEEDS:
+        net = load_run_net(VARIANTS["supcon"], encoder, seed)
+        if net is None:
+            return None
+        dm = make_dm(seed)
+        dm.setup()
+        roles = embed_roles_by_role(net, dm)
+        gallery_z, gallery_y = roles["gallery"]
+        for k in ks:
+            known = aggregate_probes(*roles["known_probes"], k)
+            unknown = aggregate_probes(*roles["unknown_probes"], k)
+            probes = torch.cat([known, unknown])
+            top = torch.stack(
+                [
+                    (probes @ gallery_z[gallery_y == c].T).amax(1)
+                    for c in gallery_y.unique()
+                ],
+                dim=1,
+            ).amax(1)
+            is_known = [1.0] * len(known) + [0.0] * len(unknown)
+            results[k].append(roc_auc_score(is_known, top))
+    return pd.DataFrame(
+        {
+            f"k={k}": {
+                "auroc_mean": f"{np.mean(v):.3f}",
+                "auroc_std": f"{np.std(v, ddof=1):.3f}",
+                "auroc_worst_rotation": f"{min(v):.3f}",
+            }
+            for k, v in results.items()
+        }
+    ).T
+
+
+aggregation_sweep()
+
+# %% [markdown]
+# Probe aggregation is the one lever that reliably shrinks the overlap
+# without new data or retraining: averaging k probe windows tightens both
+# score distributions, lifting mean AUROC and (more importantly) the
+# worst-rotation floor. In deployment this is nearly free — a person is
+# present for many consecutive CSI windows — so the per-window numbers
+# throughout these notebooks are conservative.
+
+# %% [markdown]
 # ## Conclusions and caveats
 #
 # - SupCon's aggregate DIR gain is concentrated in the previously collapsed
@@ -482,6 +671,11 @@ if embedded:
 #   margin shapes training prototypes rather than unseen identities. Its
 #   tight-cluster geometry is also exactly the regime where gap-style
 #   scoring fails hardest.
+# - Within NTU-Fi's range, more training data does not shrink the
+#   known-unknown overlap: 4 vs. 7 training identities and full vs. half
+#   samples all land within seed noise. Probe aggregation at inference is
+#   the one free lever that does. Identity scaling only shows over orders
+#   of magnitude, which NTU-Fi cannot provide.
 # - All of this inherits NTU-Fi's limits: 14 subjects, one unknown subject
 #   per rotation, single room and day. The variance across rotations — not
 #   the objective choice — remains the dominant effect, which is the

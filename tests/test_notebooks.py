@@ -71,6 +71,10 @@ def test_reid_variant_analysis_notebook_source_contract():
     # Per-seed paired analysis and cosine-geometry comparison.
     assert "per_seed_table" in source
     assert "intra" in source and "inter" in source
+    # Data-scaling ablation and probe-aggregation sweep (opt-in training).
+    assert "RUN_ABLATION" in source
+    assert "ablate-train-ids" in source and "ablate-half-samples" in source
+    assert "aggregation_sweep" in source
 
 
 def test_whofi_reproduction_notebook_source_contract():
