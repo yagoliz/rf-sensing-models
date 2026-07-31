@@ -170,11 +170,17 @@ aggregate_table(OPEN_SET)
 
 # %%
 def score_histogram(prefix="reid"):
-    prediction_files = sorted(
-        RUNS_DIR.glob(
-            f"ntu_fi_humanid_reid/{prefix}-*/seed*/version_*/predictions.csv"
+    # Only the repeats each aggregate references: seed directories can also
+    # hold superseded runs whose detection_score is a different quantity
+    # (e.g. the top-gap experiments), and pooling those with top-score runs
+    # would fake a bimodal distribution.
+    prediction_files = [
+        Path(repeat["predictions"])
+        for aggregate_path in sorted(
+            RUNS_DIR.glob(f"ntu_fi_humanid_reid/{prefix}-*/aggregate_summary.json")
         )
-    )
+        for repeat in json.loads(aggregate_path.read_text())["repeats"]
+    ]
     if not prediction_files:
         print(f"no predictions saved under {prefix}-*; run training first")
         return
