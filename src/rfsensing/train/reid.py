@@ -7,6 +7,8 @@ auxiliary identity classifier (raw embeddings) and the metric loss
 used for gallery matching. The ``arcface`` objective replaces the plain
 classifier with an additive-angular-margin softmax over the embeddings, so
 the margin penalty itself shapes the cosine geometry used at matching time.
+The ``inbatch`` objective is WhoFi's in-batch negative loss over matched
+query/gallery sample pairs (one pair per identity per batch).
 """
 
 import math
@@ -83,6 +85,31 @@ def supcon_loss(
         / positive_mask.sum(dim=1)
     )
     return -mean_log_prob_positive.mean()
+
+
+def in_batch_negative_loss(
+    query_embeddings: torch.Tensor, gallery_embeddings: torch.Tensor
+) -> torch.Tensor:
+    """WhoFi in-batch negative loss (Avola et al. 2025).
+
+    ``query_embeddings[i]`` and ``gallery_embeddings[i]`` must belong to the
+    same identity, and identities must be pairwise distinct across the batch.
+    Row-wise cross-entropy over the query-gallery cosine matrix pulls each
+    matched pair together while treating every other gallery entry in the
+    batch as a negative.
+    """
+    if query_embeddings.shape != gallery_embeddings.shape:
+        raise ValueError(
+            f"query and gallery shapes differ: {tuple(query_embeddings.shape)}"
+            f" vs {tuple(gallery_embeddings.shape)}"
+        )
+    if query_embeddings.shape[0] < 2:
+        raise ValueError("in-batch negatives need at least two identities")
+    query = F.normalize(query_embeddings.float(), dim=1)
+    gallery = F.normalize(gallery_embeddings.float(), dim=1)
+    logits = query @ gallery.T
+    targets = torch.arange(logits.shape[0], device=logits.device)
+    return F.cross_entropy(logits, targets)
 
 
 class ArcFaceHead(nn.Module):
@@ -170,10 +197,10 @@ class ReIDModule(_SupervisedModule):
                 f"classifier width {out_features} does not match "
                 f"{num_train_identities} training identities"
             )
-        if objective not in ("triplet", "supcon", "arcface"):
+        if objective not in ("triplet", "supcon", "arcface", "inbatch"):
             raise ValueError(
-                "objective must be 'triplet', 'supcon', or 'arcface', "
-                f"got {objective!r}"
+                "objective must be 'triplet', 'supcon', 'arcface', or "
+                f"'inbatch', got {objective!r}"
             )
         if triplet_weight < 0:
             raise ValueError(f"triplet_weight must be >= 0, got {triplet_weight}")
@@ -200,9 +227,34 @@ class ReIDModule(_SupervisedModule):
         self._val_embeddings: dict[int, list[torch.Tensor]] = {0: [], 1: []}
         self._val_labels: dict[int, list[torch.Tensor]] = {0: [], 1: []}
 
+    @staticmethod
+    def _paired_views(embeddings: torch.Tensor, labels: torch.Tensor):
+        """Split a batch with exactly two samples per identity into views."""
+        labels = labels.reshape(-1)
+        unique, counts = labels.unique(return_counts=True)
+        if not (counts == 2).all():
+            raise ValueError(
+                "the inbatch objective needs exactly two samples per "
+                "identity in every batch (samples_per_identity=2)"
+            )
+        query, gallery = [], []
+        for identity in unique:
+            first, second = (labels == identity).nonzero().reshape(-1)
+            query.append(embeddings[first])
+            gallery.append(embeddings[second])
+        return torch.stack(query), torch.stack(gallery)
+
     def training_step(self, batch, batch_idx):
         x, y = batch
         raw = self.net.embed(x)
+        if self.hparams.objective == "inbatch":
+            # The WhoFi loss: no auxiliary classifier, matched sample pairs
+            # against in-batch negatives.
+            query, gallery = self._paired_views(raw, y)
+            loss = in_batch_negative_loss(query, gallery)
+            self.log("train/loss", loss, prog_bar=True)
+            self.log("train/inbatch_loss", loss)
+            return loss
         if self.hparams.objective == "arcface":
             # The margin softmax subsumes the auxiliary classifier: it *is*
             # the identity CE, applied to the matching-time cosine geometry.

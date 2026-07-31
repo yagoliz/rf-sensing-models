@@ -435,6 +435,82 @@ def test_module_arcface_weight_is_optimized():
     assert ReIDModule(_net(), num_train_identities=4).arcface is None
 
 
+# --- in_batch_negative_loss ---
+
+
+def test_in_batch_negative_loss_hand_calculated():
+    from rfsensing.train.reid import in_batch_negative_loss
+
+    query = _unit([1.0, 0.0], [0.0, 1.0])
+    gallery = _unit([1.0, 0.0], [0.0, 1.0])
+    loss = in_batch_negative_loss(query, gallery)
+    # Each row: matched cosine 1, negative cosine 0 -> -log(e / (e + 1)).
+    expected = math.log(math.e + 1) - 1.0
+    assert loss.item() == pytest.approx(expected, abs=1e-5)
+
+
+def test_in_batch_negative_loss_rewards_matched_pairs():
+    from rfsensing.train.reid import in_batch_negative_loss
+
+    aligned = _unit([1.0, 0.0], [0.0, 1.0])
+    swapped = _unit([0.0, 1.0], [1.0, 0.0])
+    assert in_batch_negative_loss(aligned, aligned) < in_batch_negative_loss(
+        aligned, swapped
+    )
+
+
+def test_in_batch_negative_loss_propagates_gradients():
+    from rfsensing.train.reid import in_batch_negative_loss
+
+    query = torch.randn(4, 8, requires_grad=True)
+    gallery = torch.randn(4, 8, requires_grad=True)
+    loss = in_batch_negative_loss(query, gallery)
+    loss.backward()
+    assert torch.isfinite(query.grad).all()
+    assert torch.isfinite(gallery.grad).all()
+
+
+def test_in_batch_negative_loss_rejects_invalid_inputs():
+    from rfsensing.train.reid import in_batch_negative_loss
+
+    with pytest.raises(ValueError, match="shapes differ"):
+        in_batch_negative_loss(torch.randn(3, 4), torch.randn(2, 4))
+    with pytest.raises(ValueError, match="at least two"):
+        in_batch_negative_loss(torch.randn(1, 4), torch.randn(1, 4))
+
+
+# --- ReIDModule inbatch objective ---
+
+
+def test_module_inbatch_objective(monkeypatch):
+    module = ReIDModule(_net(), num_train_identities=4, objective="inbatch")
+    logged = _logged(module, monkeypatch)
+    batch = (torch.randn(8, *IN_SHAPE), torch.tensor([0, 0, 1, 1, 2, 2, 3, 3]))
+    loss = module.training_step(batch, 0)
+    assert {"train/loss", "train/inbatch_loss"} <= logged.keys()
+    assert "train/ce_loss" not in logged
+    assert loss.requires_grad and torch.isfinite(loss)
+
+
+def test_module_inbatch_requires_paired_batches():
+    module = ReIDModule(_net(), num_train_identities=4, objective="inbatch")
+    batch = (
+        torch.randn(8, *IN_SHAPE),
+        torch.tensor([0, 0, 0, 0, 1, 1, 2, 2]),  # identity 0 appears 4 times
+    )
+    with pytest.raises(ValueError, match="two samples per"):
+        module.training_step(batch, 0)
+
+
+def test_module_paired_views_match_labels():
+    embeddings = torch.arange(12, dtype=torch.float32).reshape(6, 2)
+    labels = torch.tensor([5, 3, 5, 8, 8, 3])
+    query, gallery = ReIDModule._paired_views(embeddings, labels)
+    # Identities in sorted order (3, 5, 8), first occurrence as query.
+    assert torch.equal(query, embeddings[[1, 0, 3]])
+    assert torch.equal(gallery, embeddings[[5, 2, 4]])
+
+
 def test_module_arcface_rejects_invalid_hyperparameters():
     with pytest.raises(ValueError, match="margin"):
         ReIDModule(

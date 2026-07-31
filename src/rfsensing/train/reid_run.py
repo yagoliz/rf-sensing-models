@@ -170,7 +170,9 @@ def run_reid(
     ``objective`` selects the training objective: ``"triplet"`` or
     ``"supcon"`` add a metric-learning term to the auxiliary identity CE,
     while ``"arcface"`` trains an additive-angular-margin softmax over the
-    embeddings instead. ``detection_score`` selects the rejection score:
+    embeddings and ``"inbatch"`` trains WhoFi's in-batch negative loss
+    (requires ``samples_per_identity=2``). ``detection_score`` selects the
+    rejection score:
     ``"top_score"`` (absolute top cosine) or ``"top_gap"`` (top-1 minus top-2
     identity score, robust to per-subject score shifts). ``accelerator``
     selects the training device (Lightning semantics); ``device`` selects

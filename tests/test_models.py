@@ -14,6 +14,10 @@ CASES = [
     ("lstm", {"bidirectional": True}),
     ("resnet18", {}),
     ("vit", {}),
+    # seq_len=10 keeps whofi valid on the shortest benchmark time axis.
+    ("whofi", {"seq_len": 10, "d_model": 32, "num_heads": 4, "embed_dim": 16}),
+    ("whofi", {"encoder": "lstm", "seq_len": 10, "d_model": 32, "embed_dim": 16}),
+    ("whofi", {"encoder": "bilstm", "seq_len": 10, "d_model": 32, "embed_dim": 16}),
 ]
 
 
@@ -54,3 +58,51 @@ def test_lstm_seq_axis():
     net = models.build("lstm", in_shape=(22, 20, 20), num_classes=6, seq_axis=0)
     out = net(torch.randn(2, 22, 20, 20))
     assert out.shape == (2, 6)
+
+
+def test_whofi_default_matches_ntu_fi_shape():
+    net = models.build("whofi", in_shape=(3, 114, 500), num_classes=14)
+    z = net.embed(torch.randn(2, 3, 114, 500))
+    assert z.shape == (2, 128)
+    # Default sequence: 500 packets uniformly subsampled to 100.
+    assert net.step_indices.numel() == 100
+    assert net.step_indices[0] == 0 and net.step_indices[-1] == 499
+
+
+def test_whofi_rejects_invalid_options():
+    with pytest.raises(ValueError, match="encoder"):
+        models.build(
+            "whofi", in_shape=(3, 114, 500), num_classes=14, encoder="gru"
+        )
+    with pytest.raises(ValueError, match="seq_len"):
+        models.build(
+            "whofi", in_shape=(22, 20, 20), num_classes=6, seq_len=100
+        )
+
+
+def test_whofi_full_sequence_when_seq_len_none():
+    net = models.build(
+        "whofi",
+        in_shape=(22, 20, 20),
+        num_classes=6,
+        seq_len=None,
+        d_model=16,
+        num_heads=2,
+        embed_dim=8,
+    )
+    assert net.step_indices is None
+    assert net.positional_encoding.shape == (20, 16)
+    assert net(torch.randn(2, 22, 20, 20)).shape == (2, 6)
+
+
+def test_whofi_bilstm_readout_concatenates_directions():
+    net = models.build(
+        "whofi",
+        in_shape=(3, 114, 500),
+        num_classes=14,
+        encoder="bilstm",
+        d_model=32,
+        embed_dim=16,
+    )
+    assert net.signature.in_features == 64  # forward + backward hidden states
+    assert net.embed(torch.randn(2, 3, 114, 500)).shape == (2, 16)
