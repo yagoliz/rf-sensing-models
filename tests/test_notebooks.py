@@ -98,3 +98,17 @@ def test_whofi_reproduction_notebook_source_contract():
     assert 'objective="inbatch"' in source
     assert "whofi-reid" in source
     assert "RUN_OPEN_SET" in source
+
+
+def test_dual_capture_notebooks_source_contract():
+    notebooks = Path(__file__).resolve().parents[1] / "notebooks"
+    stats = (notebooks / "09_dual_capture_stats.py").read_text()
+    compile(stats, "09_dual_capture_stats.py", "exec")
+    assert "load_trials" in stats and "window_starts" in stats
+    assert "f_classif" in stats and "PCA" in stats
+    classify = (notebooks / "10_dual_capture_classify.py").read_text()
+    compile(classify, "10_dual_capture_classify.py", "exec")
+    assert '"dual_capture"' in classify
+    # Trial-level split: both sniffers see the same held-out trials.
+    assert "split_trials" in classify and "isdisjoint" in classify
+    assert "ACCELERATOR" in classify  # LeNet pooling is not implemented on MPS
