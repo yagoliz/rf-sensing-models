@@ -200,7 +200,11 @@ class DualCaptureDataModule(CSIDataModule):
         self.split_trials = _trial_split(
             self.trials, self.class_names, self.split_ratios, self.split_seed
         )
-        index = {label: i for i, label in enumerate(self.class_names)}
+        self._build_sets({label: i for i, label in enumerate(self.class_names)})
+        self._is_setup = True
+
+    def _build_sets(self, index: dict[str, int]) -> None:
+        """Window ``self.split_trials`` into ``{train,val,test}_set``."""
         tensors = {
             split: _windows(
                 trials,
@@ -225,7 +229,6 @@ class DualCaptureDataModule(CSIDataModule):
                 sd = x.std(dim=(1, 2, 3), keepdim=True).clamp_min(1e-6)
                 x = (x - mu) / sd
             setattr(self, f"{split}_set", TensorDataset(x, y))
-        self._is_setup = True
 
     def train_dataloader(self):
         return self._loader(self.train_set, shuffle=True)
@@ -235,3 +238,43 @@ class DualCaptureDataModule(CSIDataModule):
 
     def test_dataloader(self):
         return self._loader(self.test_set)
+
+
+@register("dual_capture_anomaly")
+class DualCaptureAnomalyDataModule(DualCaptureDataModule):
+    """Novelty detection: learn one condition, flag every other one.
+
+    Only ``normal_label`` trials (default ``empty``) are split train/val/test;
+    every other trial is held out entirely and joins the test split, so the
+    model never sees an anomaly. Targets are 0 (normal) / 1 (anomaly);
+    ``test_labels`` and ``test_trial_names`` give each test window's condition
+    and trial for per-position scores.
+    """
+
+    name = "dual_capture_anomaly"
+
+    def __init__(self, root, *, normal_label="empty", **kwargs):
+        super().__init__(root, **kwargs)
+        if normal_label not in self.class_names:
+            raise ValueError(f"normal_label {normal_label!r} has no trials")
+        self.normal_label = normal_label
+        self.anomaly_labels = [lab for lab in self.class_names if lab != normal_label]
+        if not self.anomaly_labels:
+            raise ValueError("anomaly detection needs trials of at least one other label")
+        self.class_names = ["normal", "anomaly"]
+
+    def setup(self, stage=None):
+        if self._is_setup:
+            return
+        split = _trial_split(self.trials, [self.normal_label], self.split_ratios, self.split_seed)
+        split["test"] += [t for t in self.trials if t.label != self.normal_label]
+        self.split_trials = split
+        self._build_sets({self.normal_label: 0} | {lab: 1 for lab in self.anomaly_labels})
+        # _windows walks trials and their window starts in order
+        counts = [
+            len(window_starts(t.valid[self.device], self.window_steps, self.window_steps, self.min_valid))
+            for t in split["test"]
+        ]
+        self.test_labels = np.repeat([t.label for t in split["test"]], counts)
+        self.test_trial_names = np.repeat([t.name for t in split["test"]], counts)
+        self._is_setup = True

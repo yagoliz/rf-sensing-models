@@ -126,3 +126,28 @@ def test_nexmon_is_optional_and_detected(tmp_path):
     dm = data.build("dual_capture", root=root, device="nexmon")
     dm.setup()
     assert dm.sample_shape == (1, 30, 300) and len(dm.test_set) == 9
+
+
+def test_anomaly_datamodule_trains_on_normal_only(tmp_path):
+    root = _make_dual_tree(tmp_path)
+    dm = data.build("dual_capture_anomaly", root=root, device="esp", labels=["empty", "pos1"])
+    dm.setup()
+    assert dm.class_names == ["normal", "anomaly"] and dm.anomaly_labels == ["pos1"]
+    for split in ("train", "val"):
+        assert {t.label for t in dm.split_trials[split]} == {"empty"}
+        assert dm.__dict__[f"{split}_set"].tensors[1].eq(0).all()
+    names = {s: {t.name for t in ts} for s, ts in dm.split_trials.items()}
+    assert names["train"].isdisjoint(names["test"]) and names["val"].isdisjoint(names["test"])
+    # 1 held-out empty trial + all 5 pos1 trials, 2 fresh esp windows each
+    y = dm.test_set.tensors[1]
+    assert len(y) == len(dm.test_labels) == len(dm.test_trial_names) == 6 * 2
+    assert np.array_equal(y.numpy(), (dm.test_labels != "empty").astype(int))
+    assert set(dm.test_trial_names[dm.test_labels == "empty"]) <= names["test"]
+
+
+def test_anomaly_datamodule_validation(tmp_path):
+    root = _make_dual_tree(tmp_path)
+    with pytest.raises(ValueError, match="normal_label"):
+        data.build("dual_capture_anomaly", root=root, labels=["pos1", "pos2"])
+    with pytest.raises(ValueError, match="at least one other"):
+        data.build("dual_capture_anomaly", root=root, labels=["empty"])

@@ -112,3 +112,14 @@ def test_dual_capture_notebooks_source_contract():
     # Trial-level split: both sniffers see the same held-out trials.
     assert "split_trials" in classify and "isdisjoint" in classify
     assert "ACCELERATOR" in classify  # LeNet pooling is not implemented on MPS
+
+
+def test_dual_capture_anomaly_notebook_source_contract():
+    path = Path(__file__).resolve().parents[1] / "notebooks" / "11_dual_capture_anomaly.py"
+    source = path.read_text()
+    compile(source, str(path), "exec")
+    assert '"dual_capture_anomaly"' in source
+    # Detectors fit on empty-room train windows; val sets the threshold.
+    assert "TARGET_FPR" in source and "np.quantile" in source
+    assert "roc_auc_score" in source and "autoencoder" in source
+    assert "test_labels" in source and "test_trial_names" in source
